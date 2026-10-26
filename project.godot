@@ -11,12 +11,12 @@ config_version=5
 
 config/name="dcyberpunkgam"
 run/main_scene="res://scenes/main_menu.tscn"
-config/features=PackedStringArray("4.3")
+config/features=PackedStringArray("4.3", "C#", "dotnet")
 config/icon="res://icon.svg"
 
 [autoload]
 
-GameManager="*res://scripts/game_manager.gd"
+GameManager="*res://scripts/GameManager.cs"
 
 [display]
 
