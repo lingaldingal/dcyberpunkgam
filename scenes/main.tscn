@@ -1,0 +1,118 @@
+[gd_scene load_steps=8 format=3]
+
+[ext_resource type="PackedScene" path="res://scenes/player.tscn" id="4_player"]
+[ext_resource type="Texture2D" path="res://assets/floor.png" id="5_floor"]
+[ext_resource type="Texture2D" path="res://assets/obstacle.png" id="6_obstacle"]
+[ext_resource type="Texture2D" path="res://assets/wall.png" id="7_wall"]
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_wall_h"]
+size = Vector2(1408, 64)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_wall_v"]
+size = Vector2(64, 720)
+
+[sub_resource type="RectangleShape2D" id="RectangleShape2D_obstacle"]
+size = Vector2(64, 64)
+
+[node name="Main" type="Node2D"]
+
+[node name="Background" type="ColorRect" parent="."]
+position = Vector2(-640, -360)
+size = Vector2(2560, 1440)
+color = Color(0.05, 0.055, 0.08, 1)
+
+[node name="Floor" type="TextureRect" parent="."]
+size = Vector2(1280, 720)
+texture = ExtResource("5_floor")
+stretch_mode = 1
+
+[node name="Walls" type="Node2D" parent="."]
+
+[node name="Top" type="StaticBody2D" parent="Walls"]
+position = Vector2(640, -32)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Walls/Top"]
+shape = SubResource("RectangleShape2D_wall_h")
+
+[node name="Visual" type="TextureRect" parent="Walls/Top"]
+position = Vector2(-704, -32)
+size = Vector2(1408, 64)
+texture = ExtResource("7_wall")
+stretch_mode = 1
+
+[node name="Bottom" type="StaticBody2D" parent="Walls"]
+position = Vector2(640, 752)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Walls/Bottom"]
+shape = SubResource("RectangleShape2D_wall_h")
+
+[node name="Visual" type="TextureRect" parent="Walls/Bottom"]
+position = Vector2(-704, -32)
+size = Vector2(1408, 64)
+texture = ExtResource("7_wall")
+stretch_mode = 1
+
+[node name="Left" type="StaticBody2D" parent="Walls"]
+position = Vector2(-32, 360)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Walls/Left"]
+shape = SubResource("RectangleShape2D_wall_v")
+
+[node name="Visual" type="TextureRect" parent="Walls/Left"]
+position = Vector2(-32, -360)
+size = Vector2(64, 720)
+texture = ExtResource("7_wall")
+stretch_mode = 1
+
+[node name="Right" type="StaticBody2D" parent="Walls"]
+position = Vector2(1312, 360)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Walls/Right"]
+shape = SubResource("RectangleShape2D_wall_v")
+
+[node name="Visual" type="TextureRect" parent="Walls/Right"]
+position = Vector2(-32, -360)
+size = Vector2(64, 720)
+texture = ExtResource("7_wall")
+stretch_mode = 1
+
+[node name="Obstacles" type="Node2D" parent="."]
+
+[node name="Obstacle1" type="StaticBody2D" parent="Obstacles"]
+position = Vector2(320, 224)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Obstacles/Obstacle1"]
+shape = SubResource("RectangleShape2D_obstacle")
+
+[node name="Sprite2D" type="Sprite2D" parent="Obstacles/Obstacle1"]
+texture = ExtResource("6_obstacle")
+
+[node name="Obstacle2" type="StaticBody2D" parent="Obstacles"]
+position = Vector2(960, 496)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Obstacles/Obstacle2"]
+shape = SubResource("RectangleShape2D_obstacle")
+
+[node name="Sprite2D" type="Sprite2D" parent="Obstacles/Obstacle2"]
+texture = ExtResource("6_obstacle")
+
+[node name="Obstacle3" type="StaticBody2D" parent="Obstacles"]
+position = Vector2(640, 592)
+
+[node name="CollisionShape2D" type="CollisionShape2D" parent="Obstacles/Obstacle3"]
+shape = SubResource("RectangleShape2D_obstacle")
+
+[node name="Sprite2D" type="Sprite2D" parent="Obstacles/Obstacle3"]
+texture = ExtResource("6_obstacle")
+
+[node name="Player" parent="." instance=ExtResource("4_player")]
+position = Vector2(640, 360)
+
+[node name="HUD" type="CanvasLayer" parent="."]
+
+[node name="Label" type="Label" parent="HUD"]
+offset_left = 16.0
+offset_top = 12.0
+offset_right = 640.0
+offset_bottom = 40.0
+text = "dcyberpunkgam - move with WASD or arrow keys"
