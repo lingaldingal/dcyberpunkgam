@@ -11,7 +11,7 @@ func _ready() -> void:
 
 
 func _update_hud() -> void:
-	var c := GameManager.get_active()
+	var c = GameManager.get_active()
 	_hud_label.text = (
 		"STAGE 01 — %s L%d HP %d/%d ATK %d DEF %d EXP %d/%d  (WASD/arrows to move)"
 		% [c.name, c.level, c.hp, c.max_hp, c.attack, c.defense, c.exp, c.exp_to_next]

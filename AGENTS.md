@@ -23,6 +23,7 @@ Binary in this container: `/tmp/godot/godot` (Godot 4.7.2).
 Both pass with zero errors/warnings. Functional test pattern (temporary SceneTree script, `-s res://x.gd`): call `GameManager.start_game()`, await frames, assert `Stage01` loaded and HUD shows party; inject `InputEventKey` with `physical_keycode` set (NOT `keycode` — actions are bound to physical keys) via `Input.parse_input_event` (4.7 API; was `push_event` in older 4.x), await physics frames, assert player moved.
 
 ## Gotchas
+- Fresh clones have no `.godot/` class cache, so `class_name` globals (e.g. `CharacterData`) are unknown until the first `--import`/editor open. Don't reference `class_name` types from autoloads — use `const XScript := preload(...)` and `XScript.new()` (see `game_manager.gd`), and avoid `:=` inference on `GameManager.get_active()`.
 - `project.godot` input actions: object types must be UNQUOTED identifiers: `Object(InputEventKey, ...)`, and values end `null)` not `null")`.
 - Don't commit `.godot/` cache (gitignored). `.import` files ARE committed.
 - First run on a fresh clone needs `--import` once.

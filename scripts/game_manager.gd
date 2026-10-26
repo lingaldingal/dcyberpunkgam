@@ -4,8 +4,12 @@ extends Node
 const MAX_PARTY_SIZE := 5
 const STAGE_01_SCENE := "res://scenes/stage_01.tscn"
 const MAIN_MENU_SCENE := "res://scenes/main_menu.tscn"
+# Preloaded (a const, evaluated at compile time) so the CharacterData class_name
+# is registered even on a fresh clone, before the first editor import builds
+# the .godot/ cache.
+const CharacterDataScript := preload("res://scripts/character_data.gd")
 
-var party: Array[CharacterData] = []
+var party: Array = []
 var active_index: int = 0
 
 
@@ -16,15 +20,18 @@ func _ready() -> void:
 
 func _create_default_party() -> void:
 	party = []
-	party.append(CharacterData.new())
-	party[0].name = "Riko"
-	party.append(CharacterData.new())
-	party[1].name = "Vex"
-	party.append(CharacterData.new())
-	party[2].name = "Nyx"
+	var riko = CharacterDataScript.new()
+	riko.name = "Riko"
+	party.append(riko)
+	var vex = CharacterDataScript.new()
+	vex.name = "Vex"
+	party.append(vex)
+	var nyx = CharacterDataScript.new()
+	nyx.name = "Nyx"
+	party.append(nyx)
 
 
-func get_active() -> CharacterData:
+func get_active():
 	return party[active_index]
 
 
