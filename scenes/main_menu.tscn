@@ -16,37 +16,47 @@ anchor_right = 1.0
 anchor_bottom = 1.0
 color = Color(0.05, 0.055, 0.08, 1)
 
-[node name="Title" type="Label" parent="."]
+[node name="Center" type="CenterContainer" parent="."]
 layout_mode = 1
-anchors_preset = 8
+anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
-offset_top = 200.0
-offset_bottom = 300.0
-grow_horizontal = 2
-grow_vertical = 2
-theme_override_font_sizes_font_size = 64
+
+[node name="Panel" type="VBoxContainer" parent="Center"]
+layout_mode = 2
+theme_override_constants/separation = 24
+
+[node name="Title" type="Label" parent="Center/Panel"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 64
 text = "DCYBERPUNK"
 horizontal_alignment = 1
-vertical_alignment = 1
 
-[node name="Buttons" type="VBoxContainer" parent="."]
-layout_mode = 1
-anchors_preset = 8
-anchor_right = 1.0
-anchor_bottom = 1.0
-offset_top = 380.0
-offset_bottom = 520.0
-grow_horizontal = 2
-grow_vertical = 2
-theme_override_constants_separation = 16
-
-[node name="StartGame" type="Button" parent="Buttons"]
-custom_minimum_size = Vector2(0, 48)
+[node name="Subtitle" type="Label" parent="Center/Panel"]
 layout_mode = 2
-text = "START GAME"
+text = "a cyberpunk RPG"
+horizontal_alignment = 1
 
-[node name="QuitGame" type="Button" parent="Buttons"]
-custom_minimum_size = Vector2(0, 48)
+[node name="Status" type="Label" parent="Center/Panel"]
 layout_mode = 2
+text = ""
+horizontal_alignment = 1
+
+[node name="Spacer" type="Control" parent="Center/Panel"]
+layout_mode = 2
+custom_minimum_size = Vector2(0, 24)
+
+[node name="NewGame" type="Button" parent="Center/Panel"]
+layout_mode = 2
+custom_minimum_size = Vector2(240, 48)
+text = "NEW GAME"
+
+[node name="Continue" type="Button" parent="Center/Panel"]
+layout_mode = 2
+custom_minimum_size = Vector2(240, 48)
+text = "CONTINUE"
+
+[node name="Quit" type="Button" parent="Center/Panel"]
+layout_mode = 2
+custom_minimum_size = Vector2(240, 48)
 text = "QUIT"
