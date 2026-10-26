@@ -1,9 +1,10 @@
-[gd_scene load_steps=8 format=3]
+[gd_scene load_steps=9 format=3]
 
 [ext_resource type="PackedScene" path="res://scenes/player.tscn" id="4_player"]
 [ext_resource type="Texture2D" path="res://assets/floor.png" id="5_floor"]
 [ext_resource type="Texture2D" path="res://assets/obstacle.png" id="6_obstacle"]
 [ext_resource type="Texture2D" path="res://assets/wall.png" id="7_wall"]
+[ext_resource type="Script" path="res://scripts/stage_01.gd" id="8_stage01"]
 
 [sub_resource type="RectangleShape2D" id="RectangleShape2D_wall_h"]
 size = Vector2(1408, 64)
@@ -14,7 +15,8 @@ size = Vector2(64, 720)
 [sub_resource type="RectangleShape2D" id="RectangleShape2D_obstacle"]
 size = Vector2(64, 64)
 
-[node name="Main" type="Node2D"]
+[node name="Stage01" type="Node2D"]
+script = ExtResource("8_stage01")
 
 [node name="Background" type="ColorRect" parent="."]
 position = Vector2(-640, -360)
@@ -113,6 +115,6 @@ position = Vector2(640, 360)
 [node name="Label" type="Label" parent="HUD"]
 offset_left = 16.0
 offset_top = 12.0
-offset_right = 640.0
+offset_right = 1264.0
 offset_bottom = 40.0
-text = "dcyberpunkgam - move with WASD or arrow keys"
+text = "STAGE 01"
