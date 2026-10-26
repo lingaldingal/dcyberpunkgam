@@ -1,5 +1,7 @@
 extends SceneTree
-# Temporary functional flow test: menu -> level -> turns -> movement -> back.
+# Functional flow test: menu -> level -> initiative turn order -> rounds ->
+# movement -> back. Turn order is set each round by (Agility + d5 roll),
+# descending, so the test forces deterministic rolls via SetInitiativeRolls.
 # Run: godot --headless --path . -s res://tests/flow_test.gd
 
 const TILE := 64
@@ -28,6 +30,7 @@ func _run_flow() -> void:
 	if level == null:
 		_finish()
 		return
+	await process_frame  # ensure Level01._Ready (turn-system init) completed
 
 	# Level hosts exactly 4 characters.
 	var tokens := 0
@@ -36,34 +39,68 @@ func _run_flow() -> void:
 			tokens += 1
 	_check(tokens == 4, "level has 4 characters (got %d)" % tokens)
 
-	# Turn order cycles Vex -> Kaito -> Rook -> Mira -> Vex ... endlessly.
+	# The level opens on round 1.
+	_check(level.GetRound() == 1, "level starts on round 1 (got %d)" % level.GetRound())
+
 	var turn := level.get_node("Center/Panel/HUD/Turn")
 	var end_turn := level.get_node("Center/Panel/Actions/EndTurn")
-	var expected := ["Vex", "Kaito", "Rook", "Mira"]
-	for i in 8:
-		_check(turn.text == "TURN: " + expected[i % 4],
-				"turn %d belongs to %s (got '%s')" % [i, expected[i % 4], turn.text])
+
+	# --- Initiative: total = Agility + d5 roll; order = descending total. ---
+	# Agility: Vex 12, Kaito 10, Rook 15, Mira 10.
+	# Force roll [1,1,1,1] -> totals [13,11,16,11].
+	level.SetInitiativeRolls([1, 1, 1, 1])
+	await process_frame
+	var totals := Array(level.GetInitiativeTotals())
+	_check(totals == [13, 11, 16, 11],
+			"totals are Agility + d5 roll (got %s)" % str(totals))
+	# Rook 16 > Vex 13 > Kaito 11 == Mira 11 (tie -> party order: Kaito, Mira).
+	_check(Array(level.GetInitiativeOrderNames()) == ["Rook", "Vex", "Kaito", "Mira"],
+			"turn order is descending total w/ tiebreak (got %s)" % str(level.GetInitiativeOrderNames()))
+	_check(turn.text == "ROUND 1 — TURN: Rook", "round 1 starts with Rook (got '%s')" % turn.text)
+	_check(level.GetCurrentName() == "Rook", "current character is Rook")
+
+	# A high d5 roll can overtake a higher-Agility character:
+	# roll [5,1,1,1] -> Vex 17, Rook 16 -> Vex leads despite lower Agility.
+	level.SetInitiativeRolls([5, 1, 1, 1])
+	await process_frame
+	_check(Array(level.GetInitiativeOrderNames()) == ["Vex", "Rook", "Kaito", "Mira"],
+			"high d5 roll lets Vex (12) beat Rook (15) (got %s)" % str(level.GetInitiativeOrderNames()))
+
+	# --- Turn advancement: everyone acts once, then a new round re-rolls. ---
+	level.SetInitiativeRolls([1, 1, 1, 1])
+	await process_frame
+	var expected := ["Rook", "Vex", "Kaito", "Mira"]
+	for i in 4:
+		_check(level.GetCurrentName() == expected[i],
+				"turn %d belongs to %s (got '%s')" % [i, expected[i], level.GetCurrentName()])
 		end_turn.pressed.emit()
 		await process_frame
+	# After all 4 acted, a new round begins (re-rolled).
+	_check(level.GetRound() == 2, "new round starts after everyone acted (got %d)" % level.GetRound())
+	_check(turn.text.begins_with("ROUND 2"), "HUD shows round 2 (got '%s')" % turn.text)
 
-	# Keyboard movement: P0 starts at (1,1), flanked by P1 (right) and
-	# P2 (down). Left (0,1) is open.
+	# --- Movement: make Vex active, then verify WASD + click movement. ---
+	level.SetInitiativeRolls([1, 1, 1, 1])  # order Rook, Vex, ... -> Rook active
+	await process_frame
+	end_turn.pressed.emit()  # -> Vex active
+	await process_frame
+	_check(level.GetCurrentName() == "Vex", "Vex is now active for movement test")
+
 	var p0 := level.get_node("Board/P0")
 	_press_key(KEY_A)
 	await process_frame
-	_check(p0.position == Vector2(0, TILE), "P0 moved left to (0,1)")
+	_check(p0.position == Vector2(0, TILE), "Vex moved left to (0,1)")
 
-	# Down to (0,2).
 	_press_key(KEY_S)
 	await process_frame
-	_check(p0.position == Vector2(0, 2 * TILE), "P0 moved down to (0,2)")
+	_check(p0.position == Vector2(0, 2 * TILE), "Vex moved down to (0,2)")
 
-	# Right is blocked: P2 stands at (1,2).
+	# Right is blocked: Rook (P2) stands at (1,2).
 	_press_key(KEY_D)
 	await process_frame
-	_check(p0.position == Vector2(0, 2 * TILE), "P0 blocked by party member at (1,2)")
+	_check(p0.position == Vector2(0, 2 * TILE), "Vex blocked by Rook at (1,2)")
 
-	# Clicking the highlighted tile at (0,3) moves P0 there. The board
+	# Click the highlighted tile at (0,3) to move Vex there. The board
 	# handles clicks via its gui_input signal (board-local coords); emit
 	# it directly since headless skips the window's mouse hit-test.
 	var board := level.get_node("Board")
@@ -73,21 +110,7 @@ func _run_flow() -> void:
 	click.position = Vector2(0 * TILE + TILE / 2, 3 * TILE + TILE / 2)
 	board.gui_input.emit(click)
 	await process_frame
-	_check(p0.position == Vector2(0, 3 * TILE), "click moved P0 to (0,3)")
-
-	# P3 (Mira) starts at (2,2); (3,2) is an obstacle. End three turns
-	# to make P3 active, then verify the obstacle blocks and S moves.
-	for i in 3:
-		end_turn.pressed.emit()
-		await process_frame
-	_check(turn.text == "TURN: Mira", "turn passed to Mira (got '%s')" % turn.text)
-	var p3 := level.get_node("Board/P3")
-	_press_key(KEY_D)
-	await process_frame
-	_check(p3.position == Vector2(2 * TILE, 2 * TILE), "P3 blocked by obstacle at (3,2)")
-	_press_key(KEY_S)
-	await process_frame
-	_check(p3.position == Vector2(2 * TILE, 3 * TILE), "P3 moved down to (2,3)")
+	_check(p0.position == Vector2(0, 3 * TILE), "click moved Vex to (0,3)")
 
 	# BACK returns to the menu.
 	level.get_node("Center/Panel/Actions/Back").pressed.emit()

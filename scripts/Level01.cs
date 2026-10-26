@@ -3,10 +3,12 @@ using Godot;
 namespace Dcyberpunkgam;
 
 /// <summary>
-/// Level 01: placeholder top-down arena. A party of four takes turns;
-/// the active character can be moved (WASD/arrows or clicking a
+/// Level 01: placeholder top-down arena. A party of four fights in
+/// rounds; each round every character rolls a d5 for initiative and
+/// the roll is added to their Agility to set turn order (descending).
+/// The active character can be moved (WASD/arrows or clicking a
 /// highlighted tile), then END TURN passes control to the next
-/// character, looping endlessly.
+/// character. When everyone has acted, a new round re-rolls initiative.
 /// </summary>
 public partial class Level01 : Control
 {
@@ -26,12 +28,13 @@ public partial class Level01 : Control
         { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
     };
 
-    private static readonly (string Name, Color Color)[] Party =
+    // Placeholder party. Agility: 10 = normal, 20 = max.
+    private static readonly Character[] Party =
     {
-        ("Vex", new Color(0.85f, 0.25f, 0.35f)),
-        ("Kaito", new Color(0.25f, 0.75f, 0.9f)),
-        ("Rook", new Color(0.4f, 0.85f, 0.45f)),
-        ("Mira", new Color(0.95f, 0.75f, 0.25f)),
+        new("Vex", new Color(0.85f, 0.25f, 0.35f), 12),
+        new("Kaito", new Color(0.25f, 0.75f, 0.9f), 10),
+        new("Rook", new Color(0.4f, 0.85f, 0.45f), 15),
+        new("Mira", new Color(0.95f, 0.75f, 0.25f), 10),
     };
 
     private static readonly (int X, int Y)[] StartCells =
@@ -43,7 +46,7 @@ public partial class Level01 : Control
     private readonly List<ColorRect> _tokenBodies = new();
     private readonly List<ColorRect> _highlights = new();
 
-    private int _activeIndex;
+    private TurnSystem _turns = null!;
     private bool _turnActive;
 
     private Control _board = null!;
@@ -76,7 +79,9 @@ public partial class Level01 : Control
         _endTurnButton.Pressed += OnEndTurnPressed;
         _backButton.Pressed += OnBackPressed;
 
-        SetActive(0);
+        _turns = new TurnSystem(Party.ToList());
+        _turns.StartRound();
+        SetActive();
     }
 
     // Movement keys are handled in _Input (runs before focus handling)
@@ -118,7 +123,8 @@ public partial class Level01 : Control
         if (!_turnActive)
             return;
         _turnActive = false;
-        SetActive(_activeIndex + 1);
+        _turns.EndTurn();
+        SetActive();
     }
 
     private void OnBackPressed()
@@ -126,15 +132,40 @@ public partial class Level01 : Control
         GetNode<GameManager>("/root/GameManager").QuitToMenu();
     }
 
-    private void SetActive(int index)
+    // Test/debug hooks: read turn state and force deterministic d5 rolls.
+    public int GetRound() => _turns.Round;
+    public string GetCurrentName() => _turns.Current.Name;
+    public void SetInitiativeRolls(int[] rolls) => _turns.SetRolls(rolls);
+    public int[] GetInitiativeTotals() => (int[])_turns.Total.Clone();
+
+    /// <summary>Character names in this round's turn order (first = next to act).</summary>
+    public string[] GetInitiativeOrderNames()
     {
-        _activeIndex = index % Party.Length;
+        var order = _turns.GetOrder();
+        var names = new string[order.Length];
+        for (int i = 0; i < order.Length; i++)
+            names[i] = _turns.Combatants[order[i]].Name;
+        return names;
+    }
+
+    private void SetActive()
+    {
+        int index = _turns.CurrentIndex;
         _turnActive = true;
-        _turnLabel.Text = $"TURN: {Party[_activeIndex].Name}";
-        _infoLabel.Text = "WASD / arrows — move · click a highlighted tile · END TURN passes to the next character";
+        _turnLabel.Text = $"ROUND {_turns.Round} — TURN: {_turns.Current.Name}";
+        _infoLabel.Text = BuildInitiativeInfo();
         for (int i = 0; i < _tokenBodies.Count; i++)
-            _tokenBodies[i].Modulate = i == _activeIndex ? Colors.White : new Color(1, 1, 1, 0.55f);
+            _tokenBodies[i].Modulate = i == index ? Colors.White : new Color(1, 1, 1, 0.55f);
         RefreshHighlights();
+    }
+
+    private string BuildInitiativeInfo()
+    {
+        var parts = new List<string>(_turns.Combatants.Count);
+        for (int i = 0; i < _turns.Combatants.Count; i++)
+            parts.Add($"{_turns.Combatants[i].Name} {_turns.Combatants[i].Agility}+{_turns.Roll[i]}");
+        return string.Join(" · ", parts)
+            + "  —  d5 initiative + Agility sets order (high first) · WASD / click to move · END TURN";
     }
 
     private void TryMove(int dx, int dy)
@@ -169,20 +200,21 @@ public partial class Level01 : Control
             return;
         if (IsOccupied(next))
             return;
-        _tokens[_activeIndex].Position = new Vector2(next.X * TileSize, next.Y * TileSize);
+        _tokens[_turns.CurrentIndex].Position = new Vector2(next.X * TileSize, next.Y * TileSize);
         RefreshHighlights();
     }
 
     private Vector2I CurrentCell()
     {
-        return (Vector2I)(_tokens[_activeIndex].Position / TileSize);
+        return (Vector2I)(_tokens[_turns.CurrentIndex].Position / TileSize);
     }
 
     private bool IsOccupied(Vector2I cell)
     {
+        int current = _turns.CurrentIndex;
         for (int i = 0; i < _tokens.Count; i++)
         {
-            if (i == _activeIndex)
+            if (i == current)
                 continue;
             if ((Vector2I)(_tokens[i].Position / TileSize) == cell)
                 return true;
@@ -236,7 +268,7 @@ public partial class Level01 : Control
 
         for (int i = 0; i < Party.Length; i++)
         {
-            var (name, color) = Party[i];
+            var (name, color) = (Party[i].Name, Party[i].Color);
             var (sx, sy) = StartCells[i];
             var token = new Control
             {
