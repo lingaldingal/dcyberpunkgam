@@ -1,7 +1,8 @@
 extends SceneTree
 # Functional flow test: menu -> level -> initiative turn order -> rounds ->
-# movement -> back. Turn order is set each round by (Agility + d5 roll),
-# descending, so the test forces deterministic rolls via SetInitiativeRolls.
+# movement -> back. Turn order is set once at the start of the encounter by
+# (Agility + d5 roll), descending, and persists for the rest of it, so the
+# test forces deterministic rolls via SetInitiativeRolls.
 # Run: godot --headless --path . -s res://tests/flow_test.gd
 
 const TILE := 64
@@ -66,7 +67,7 @@ func _run_flow() -> void:
 	_check(Array(level.GetInitiativeOrderNames()) == ["Vex", "Rook", "Kaito", "Mira"],
 			"high d5 roll lets Vex (12) beat Rook (15) (got %s)" % str(level.GetInitiativeOrderNames()))
 
-	# --- Turn advancement: everyone acts once, then a new round re-rolls. ---
+	# --- Turn advancement: everyone acts once, then a new round begins. ---
 	level.SetInitiativeRolls([1, 1, 1, 1])
 	await process_frame
 	var expected := ["Rook", "Vex", "Kaito", "Mira"]
@@ -75,9 +76,22 @@ func _run_flow() -> void:
 				"turn %d belongs to %s (got '%s')" % [i, expected[i], level.GetCurrentName()])
 		end_turn.pressed.emit()
 		await process_frame
-	# After all 4 acted, a new round begins (re-rolled).
+	# After all 4 acted, a new round begins. Initiative was rolled once, so
+	# the order persists into round 2 (no re-roll) and round 3.
 	_check(level.GetRound() == 2, "new round starts after everyone acted (got %d)" % level.GetRound())
 	_check(turn.text.begins_with("ROUND 2"), "HUD shows round 2 (got '%s')" % turn.text)
+	_check(Array(level.GetInitiativeOrderNames()) == expected,
+			"initiative order persists into round 2 (got %s)" % str(level.GetInitiativeOrderNames()))
+	_check(Array(level.GetInitiativeTotals()) == [13, 11, 16, 11],
+			"initiative totals persist into round 2 (got %s)" % str(level.GetInitiativeTotals()))
+	for i in 4:
+		_check(level.GetCurrentName() == expected[i],
+				"round 2 turn %d belongs to %s (got '%s')" % [i, expected[i], level.GetCurrentName()])
+		end_turn.pressed.emit()
+		await process_frame
+	_check(level.GetRound() == 3, "round 3 starts after second pass (got %d)" % level.GetRound())
+	_check(Array(level.GetInitiativeOrderNames()) == expected,
+			"initiative order persists into round 3 (got %s)" % str(level.GetInitiativeOrderNames()))
 
 	# --- Movement: make Vex active, then verify WASD + click movement. ---
 	level.SetInitiativeRolls([1, 1, 1, 1])  # order Rook, Vex, ... -> Rook active

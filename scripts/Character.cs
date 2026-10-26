@@ -4,7 +4,8 @@ namespace Dcyberpunkgam;
 
 /// <summary>
 /// A party combatant. <see cref="Agility"/> (10 = normal, 20 = max) is the base
-/// for turn order; a d5 initiative roll is added to it each round.
+/// for turn order; a d5 initiative roll is added to it once at the start of
+/// the encounter.
 /// </summary>
 public class Character
 {

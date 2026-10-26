@@ -3,10 +3,12 @@ using System.Linq;
 namespace Dcyberpunkgam;
 
 /// <summary>
-/// Round-based initiative turn system. Each round every combatant rolls a d5
-/// for initiative; the roll is added to their Agility and combatants act in
-/// descending order of that total. Ties break by higher Agility, then party
-/// order. Everyone acts once per round, then a new round re-rolls initiative.
+/// Round-based initiative turn system. At the start of the encounter every
+/// combatant rolls a d5 for initiative; the roll is added to their Agility
+/// and combatants act in descending order of that total. Ties break by
+/// higher Agility, then party order. The order is rolled once and persists
+/// for the rest of the encounter; rounds only track how many times everyone
+/// has acted.
 /// </summary>
 public class TurnSystem
 {
@@ -33,9 +35,13 @@ public class TurnSystem
     public Character Current => Combatants[_order[_pointer]];
     public int CurrentIndex => _order[_pointer];
 
-    public void StartRound()
+    /// <summary>
+    /// Rolls initiative once, at the start of the encounter. The resulting
+    /// order persists for the rest of the encounter; rounds no longer re-roll.
+    /// </summary>
+    public void StartEncounter()
     {
-        Round++;
+        Round = 1;
         for (int i = 0; i < Combatants.Count; i++)
         {
             Roll[i] = _rng.Next(1, 6); // d5
@@ -45,17 +51,20 @@ public class TurnSystem
         _pointer = 0;
     }
 
-    /// <summary>Advance to the next combatant; completing the round re-rolls it.</summary>
+    /// <summary>Advance to the next combatant; the persisted order is kept.</summary>
     public void EndTurn()
     {
         _pointer++;
         if (_pointer >= _order.Length)
-            StartRound();
+        {
+            Round++;
+            _pointer = 0;
+        }
     }
 
     /// <summary>
-    /// Test/debug hook: force this round's d5 results (by party index) and
-    /// recompute the order without touching the RNG.
+    /// Test/debug hook: force the d5 results (by party index) and recompute
+    /// the order without touching the RNG.
     /// </summary>
     public void SetRolls(int[] rolls)
     {

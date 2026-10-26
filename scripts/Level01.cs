@@ -4,11 +4,13 @@ namespace Dcyberpunkgam;
 
 /// <summary>
 /// Level 01: placeholder top-down arena. A party of four fights in
-/// rounds; each round every character rolls a d5 for initiative and
-/// the roll is added to their Agility to set turn order (descending).
+/// rounds; at the start of the encounter every character rolls a d5
+/// for initiative and the roll is added to their Agility to set turn
+/// order (descending), which persists for the rest of the encounter.
 /// The active character can be moved (WASD/arrows or clicking a
 /// highlighted tile), then END TURN passes control to the next
-/// character. When everyone has acted, a new round re-rolls initiative.
+/// character. When everyone has acted, a new round begins with the
+/// same order.
 /// </summary>
 public partial class Level01 : Control
 {
@@ -80,7 +82,7 @@ public partial class Level01 : Control
         _backButton.Pressed += OnBackPressed;
 
         _turns = new TurnSystem(Party.ToList());
-        _turns.StartRound();
+        _turns.StartEncounter();
         SetActive();
     }
 

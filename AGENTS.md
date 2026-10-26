@@ -17,10 +17,12 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 
 ## Turn system (initiative)
 `TurnSystem` (C#, plain class — not a Godot node) drives turn order in Level01:
-- Each round, every combatant rolls a **d5** (1–5); **total = Agility + roll**.
+- At the start of the encounter (`StartEncounter()`), every combatant rolls a
+  **d5** (1–5); **total = Agility + roll**.
 - Turn order is **descending total**; ties break by higher Agility, then party order.
-- Everyone acts once per round; END TURN advances, and completing the round
-  starts a new one (re-rolls). Agility: 10 = normal, 20 = max.
+- The order is rolled **once** and persists for the rest of the encounter.
+  Everyone acts once per round; END TURN advances, and completing the round
+  starts a new one with the SAME order (no re-roll). Agility: 10 = normal, 20 = max.
 - `Level01` builds it in `_Ready` from its `Party` (Vex 12, Kaito 10, Rook 15,
   Mira 10) and shows `ROUND n — TURN: <name>` + per-character `Agility+roll`
   in the HUD. Test hooks on Level01: `GetRound()`, `GetCurrentName()`,
@@ -43,7 +45,7 @@ Binary in this container: `/tmp/godot/godot` (Godot 4.7.2).
 ```
 <bin> --headless --path . --import                    # clean import check
 <bin> --headless --path . --quit-after 120            # smoke run (main scene = menu)
-<bin> --headless --path . -s res://tests/flow_test.gd # functional flow test (all 20 checks)
+<bin> --headless --path . -s res://tests/flow_test.gd # functional flow test (all 28 checks)
 ```
 Headless alone is NOT enough for UI: it never renders, so off-screen controls
 are invisible to it. To verify a menu actually displays, run on a virtual
