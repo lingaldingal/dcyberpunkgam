@@ -13,6 +13,7 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - `scripts/Character.cs` — combatant data (Name, Color, Agility)
 - `scripts/TurnSystem.cs` — round-based initiative turn order (see below)
 - `dcyberpunkgam.csproj` / `dcyberpunkgam.sln` — .NET project (Godot.NET.Sdk 4.7.2, net8.0)
+- `run.sh` — builds the C# then launches the game with the Mono Godot binary (the command the user runs to play)
 - `tests/flow_test.gd` — headless SceneTree functional test (menu → level → initiative order → rounds → movement → back)
 - `tests/cutscene_test.gd` — headless functional test (menu → SCENE TEST → reveal, speaker alternation, highlight, back)
 - `readme.me` — pre-existing file, untouched
@@ -48,32 +49,48 @@ SCENE TEST button:
 - `flow_test.gd` uses `SetInitiativeRolls` to make order deterministic
   (e.g. roll `[1,1,1,1]` → Rook 16, Vex 13, Kaito/Mira 11 tie → Kaito before Mira).
 
-## Build (C#)
-The .NET SDK in this container is `/tmp/dotnet` (not on PATH). Build before running:
+## Build (C#) + running the game
+**Preferred: just `./run.sh`** — it builds the C# (`dotnet build`) then launches the
+game with the Mono Godot binary. `./run.sh --no-build` skips the build when code is
+unchanged. This is the single command the user runs to play.
+
+`dotnet` is on PATH (`/usr/bin/dotnet`). Build (if not using run.sh):
 ```
-export PATH=/tmp/dotnet:$PATH DOTNET_ROOT=/tmp/dotnet DOTNET_CLI_TELEMETRY_OPTOUT=1
-/tmp/dotnet/dotnet build dcyberpunkgam.csproj
+dotnet build dcyberpunkgam.csproj
 ```
 Godot's SDK redirects output to `.godot/mono/temp/bin/Debug/` (gitignored), NOT `bin/`.
-Run the game with the Mono build: `/tmp/godot/Godot_v4.7.2-stable_mono_linux_x86_64/Godot_v4.7.2-stable_mono_linux.x86_64`.
+Run the game with the Mono build (loads `.cs`):
+`/home/bigal/Applications/GodotMono/Godot_v4.7.2-stable_mono_linux_x86_64/Godot_v4.7.2-stable_mono_linux.x86_64 --path .`
+
+**Gotcha — "buttons don't respond" = C# not built.** The Mono binary loads `.cs`
+scripts from the built assembly in `.godot/mono/temp/bin/Debug/dcyberpunkgam.dll`.
+If that DLL is missing/stale, every `GetNode<...>` and `Pressed +=` binding is a
+no-op and buttons silently do nothing (autoload `GameManager` also fails to
+instantiate). Always `dotnet build` before running. The bare `godot` on PATH
+(`/usr/local/bin/godot`) is the GDScript build and errors
+"Failed to instantiate an autoload, script ... does not inherit from 'Node'".
 
 ## Validation (headless + rendered)
-Binary in this container: `/tmp/godot/godot` (Godot 4.7.2).
+The functional tests (`flow_test.gd`, `cutscene_test.gd`) call C# methods
+(`GetLineCount`, `SetInitiativeRolls`, ...), so run them with the **Mono** binary
+(`./run.sh`'s binary), NOT the bare `godot`. Build the C# first.
 ```
-<bin> --headless --path . --import                    # clean import check
-<bin> --headless --path . --quit-after 120            # smoke run (main scene = menu)
-<bin> --headless --path . -s res://tests/flow_test.gd # functional flow test (all 28 checks)
+GODOT=/home/bigal/Applications/GodotMono/Godot_v4.7.2-stable_mono_linux_x86_64/Godot_v4.7.2-stable_mono_linux.x86_64
+dotnet build dcyberpunkgam.csproj
+$GODOT --headless --path . --import                    # clean import check
+$GODOT --headless --path . -s res://tests/flow_test.gd      # functional flow test (all 28 checks)
+$GODOT --headless --path . -s res://tests/cutscene_test.gd  # cutscene test (13 checks)
 ```
 Headless alone is NOT enough for UI: it never renders, so off-screen controls
-are invisible to it. To verify a menu actually displays, run on a virtual
-display and screenshot:
-```
-Xvfb :99 -screen 0 1280x720x24 &
-DISPLAY=:99 <bin> --path . &            # then: import -window root out.png
-```
-Check the PNG has more than a handful of unique colors (flat = black screen).
-For real click testing use `xdotool windowfocus <id>` then `mousemove`/`click`
-(no WM on Xvfb, so `windowactivate` fails — plain focus works).
+are invisible to it. There's a real Xorg at `DISPLAY=:0.0` (no Xvfb/xdotool here).
+To screenshot a scene, run a tiny `SceneTree` script with the **Mono** binary
+(`$GODOT --path . -s res://tests/_shot.gd`, NON-headless) that instantiates the
+scene, `await process_frame` a few times, then
+`root.get_window().get_texture().get_image().save_png(...)`. For a real click,
+build an `InputEventMouseButton` (left, pressed) and `Input.parse_input_event(p)`
+at the button's `get_global_rect().get_center()`, then the release event. Check
+the PNG has more than a handful of unique colors (flat = black screen); analyze
+with PIL.
 
 ## Menu layout gotcha (the black-screen bug)
 The original menu put `anchors_preset = 8` (center) on the Title/Buttons nodes
@@ -111,9 +128,7 @@ never mix `anchors_preset` with explicit `anchor_*` values that disagree.
   The bare `godot` on PATH (`/usr/local/bin/godot`) is the GDScript build and
   fails with "No loader found for resource ... .cs". `dotnet` is on PATH
   (`/usr/bin/dotnet`), so plain `dotnet build dcyberpunkgam.csproj` works.
-  (The `/tmp/dotnet` + `/tmp/godot` paths above were from an earlier container.)
-- **Rendering verification without ImageMagick**: there's a real Xorg at
-  `DISPLAY=:0.0`. To screenshot a scene, run a tiny `SceneTree` script
-  (`godot --path . -s res://tests/_shot.gd`, NON-headless) that instantiates
-  the scene, `await process_frame` a few times, then
-  `root.get_texture().get_image().save_png(...)`. Analyze the PNG with PIL.
+  The simplest path: just `./run.sh`.
+- **Rendering verification**: see the "Validation" section — real Xorg at
+  `DISPLAY=:0.0`, screenshot via a NON-headless `SceneTree` script with the
+  Mono binary, analyze the PNG with PIL.
