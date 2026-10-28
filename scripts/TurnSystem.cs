@@ -79,6 +79,22 @@ public class TurnSystem
 
     public int[] GetOrder() => (int[])_order.Clone();
 
+    /// <summary>
+    /// Test hook: make the combatant at roster <paramref name="index"/> active
+    /// without re-rolling initiative. The persisted order is kept.
+    /// </summary>
+    public void ForceCurrent(int index)
+    {
+        for (int i = 0; i < _order.Length; i++)
+        {
+            if (_order[i] == index)
+            {
+                _pointer = i;
+                return;
+            }
+        }
+    }
+
     private int[] BuildOrder()
     {
         var indices = Enumerable.Range(0, Combatants.Count).ToList();

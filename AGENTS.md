@@ -6,15 +6,15 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - `GAMES.md` — game design outline (OUTDATED: references removed `CharacterData`; trust the code)
 - `project.godot` — main scene `res://scenes/main_menu.tscn`; `GameManager` C# autoload; `features` includes `C#`, `dotnet`
 - `scenes/main_menu.tscn` — title screen: NEW GAME / CONTINUE / SCENE TEST / QUIT
-- `scenes/level_01.tscn` — placeholder turn-based arena (grid board, 4 party tokens, HUD, END TURN / BACK)
+- `scenes/level_01.tscn` — turn-based arena (20×12 grid board, 4 party + 4 enemy tokens, HUD, END TURN / BACK)
 - `scenes/scene_test.tscn` — basic 2D cutscene (two placeholder characters L/R, scrolling cheese dialogue, speaker highlight)
 - `scripts/GameManager.cs` — autoload: scene flow (StartGame / StartSceneTest / QuitToMenu); exposes `Instance`
 - `scripts/MainMenu.cs`, `scripts/Level01.cs`, `scripts/SceneTest.cs`
-- `scripts/Character.cs` — combatant data (Name, Color, Agility)
+- `scripts/Character.cs` — combatant data (Name, Color, Agility, `IsEnemy`, `MovementRange` = 5 + Agility/2 floored)
 - `scripts/TurnSystem.cs` — round-based initiative turn order (see below)
 - `dcyberpunkgam.csproj` / `dcyberpunkgam.sln` — .NET project (Godot.NET.Sdk 4.7.2, net8.0)
 - `run.sh` — builds the C# then launches the game with the Mono Godot binary (the command the user runs to play)
-- `tests/flow_test.gd` — headless SceneTree functional test (menu → level → initiative order → rounds → movement → back)
+- `tests/flow_test.gd` — headless SceneTree functional test (menu → level → 8-combatant initiative → rounds → movement range → BFS reachability → WASD/click movement → enemy auto-move → back)
 - `tests/cutscene_test.gd` — headless functional test (menu → SCENE TEST → reveal, speaker alternation, highlight, back)
 - `readme.me` — pre-existing file, untouched
 
@@ -33,29 +33,49 @@ SCENE TEST button:
   `GetLineCount()`, `GetTextPlain()` (logical text, BBCode-free), `SkipReveal()`,
   `SetLine(int)`. `cutscene_test.gd` uses these (headless, so no render pass).
 
-## Turn system (initiative)
+## Turn system (initiative) — 8 combatants
 `TurnSystem` (C#, plain class — not a Godot node) drives turn order in Level01:
-- At the start of the encounter (`StartEncounter()`), every combatant rolls a
-  **d5** (1–5); **total = Agility + roll**.
-- Turn order is **descending total**; ties break by higher Agility, then party order.
+- At the start of the encounter (`StartEncounter()`), **every combatant**
+  (4 party + 4 enemies) rolls a **d5** (1–5); **total = Agility + roll**.
+- Turn order is **descending total**; ties break by higher Agility, then roster order.
 - The order is rolled **once** and persists for the rest of the encounter.
   Everyone acts once per round; END TURN advances, and completing the round
-  starts a new one with the SAME order (no re-roll). Agility: 10 = normal, 20 = max.
-- `Level01` builds it in `_Ready` from its `Party` (Vex 12, Kaito 10, Rook 15,
-  Mira 10) and shows `ROUND n — TURN: <name>` + per-character `Agility+roll`
-  in the HUD. Test hooks on Level01: `GetRound()`, `GetCurrentName()`,
-  `GetInitiativeTotals()`, `GetInitiativeOrderNames()`, `SetInitiativeRolls(int[])`
-  (forces deterministic d5 results for tests).
-- `flow_test.gd` uses `SetInitiativeRolls` to make order deterministic
-  (e.g. roll `[1,1,1,1]` → Rook 16, Vex 13, Kaito/Mira 11 tie → Kaito before Mira).
+  starts a new one with the SAME order (no re-roll).
+- Party: Vex 12, Kaito 10, Rook 15, Mira 10. Enemies: Brute 16, Slick 14,
+  Gutter 12, Wisp 9 (see `Level01.Enemies`).
+- `Level01` builds it in `_Ready` from `Party` + `Enemies` and shows
+  `ROUND n — TURN: <name>` + per-character `Agility+roll` in the HUD.
+  Test hooks on Level01: `GetRound()`, `GetCurrentName()`, `GetInitiativeTotals()`,
+  `GetInitiativeOrderNames()`, `SetInitiativeRolls(int[])` (8 values, party then
+  enemies, forces deterministic d5 results), `GetMovementRange()`,
+  `IsReachable(int x, int y)`, `GetTokenCell(string) -> Vector2i`,
+  `ForceCurrent(string)`. `TurnSystem.ForceCurrent(int index)` sets the pointer
+  to that POSITION in the sorted `_order` array (NOT a roster index).
+- `flow_test.gd` uses `SetInitiativeRolls` to make order deterministic.
+
+## Movement + pathfinding (Level01)
+- Movement range per turn = **5 + Agility/2 (floored)** (`Character.MovementRange`).
+- Reachable cells are computed with **BFS** over the walkable grid, blocked by
+  obstacles and other tokens; `IsReachable(x, y)` returns whether the *current*
+  combatant can reach that cell within range. (Replaced an earlier
+  `GetReachableCells()` that returned `Vector2I[]` — the array didn't export
+  cleanly to GDScript, so it's a `bool` now.)
+- **Enemies auto-move** one tile toward a random walkable neighbor each frame
+  in `_Process`, but only while the armed combatant is still the current one
+  (guards against the turn-advancing mid-move). No combat logic yet.
+- Map is 20 cols × 12 rows; obstacles + token positions mean some short
+  straight-line targets need a detour (e.g. Vex at (1,1) can't reach (1,11)
+  directly because Rook at (1,2) blocks the column — the left column detour is
+  12 steps, just over Vex's range 11).
 
 ## Build (C#) + running the game
 **Preferred: just `./run.sh`** — it builds the C# (`dotnet build`) then launches the
 game with the Mono Godot binary. `./run.sh --no-build` skips the build when code is
 unchanged. This is the single command the user runs to play.
 
-`dotnet` is on PATH (`/usr/bin/dotnet`). Build (if not using run.sh):
+`dotnet` (SDK 8) is on PATH (`/usr/bin/dotnet`). Build before running:
 ```
+export DOTNET_CLI_TELEMETRY_OPTOUT=1
 dotnet build dcyberpunkgam.csproj
 ```
 Godot's SDK redirects output to `.godot/mono/temp/bin/Debug/` (gitignored), NOT `bin/`.
@@ -67,18 +87,20 @@ scripts from the built assembly in `.godot/mono/temp/bin/Debug/dcyberpunkgam.dll
 If that DLL is missing/stale, every `GetNode<...>` and `Pressed +=` binding is a
 no-op and buttons silently do nothing (autoload `GameManager` also fails to
 instantiate). Always `dotnet build` before running. The bare `godot` on PATH
-(`/usr/local/bin/godot`) is the GDScript build and errors
+(`/usr/local/bin/godot`) is the non-Mono build and errors
 "Failed to instantiate an autoload, script ... does not inherit from 'Node'".
 
 ## Validation (headless + rendered)
-The functional tests (`flow_test.gd`, `cutscene_test.gd`) call C# methods
-(`GetLineCount`, `SetInitiativeRolls`, ...), so run them with the **Mono** binary
-(`./run.sh`'s binary), NOT the bare `godot`. Build the C# first.
+TWO godot builds exist here — you MUST use the **Mono** one for C# (the plain
+`godot` on PATH, `/usr/local/bin/godot`, is the non-Mono build and fails to load
+`.cs` scripts with "No loader found for resource"). The functional tests
+(`flow_test.gd`, `cutscene_test.gd`) call C# methods, so run them with the Mono
+binary. Build the C# first.
 ```
 GODOT=/home/bigal/Applications/GodotMono/Godot_v4.7.2-stable_mono_linux_x86_64/Godot_v4.7.2-stable_mono_linux.x86_64
-dotnet build dcyberpunkgam.csproj
 $GODOT --headless --path . --import                    # clean import check
-$GODOT --headless --path . -s res://tests/flow_test.gd      # functional flow test (all 28 checks)
+$GODOT --headless --path . --quit-after 120            # smoke run (main scene = menu)
+$GODOT --headless --path . -s res://tests/flow_test.gd      # functional flow test (45 checks)
 $GODOT --headless --path . -s res://tests/cutscene_test.gd  # cutscene test (13 checks)
 ```
 Headless alone is NOT enough for UI: it never renders, so off-screen controls
