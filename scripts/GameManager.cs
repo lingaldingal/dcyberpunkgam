@@ -8,6 +8,7 @@ namespace Dcyberpunkgam;
 public partial class GameManager : Node
 {
     public const string Level01Scene = "res://scenes/level_01.tscn";
+    public const string SceneTestScene = "res://scenes/scene_test.tscn";
     public const string MainMenuScene = "res://scenes/main_menu.tscn";
 
     public static GameManager Instance { get; private set; } = null!;
@@ -20,6 +21,11 @@ public partial class GameManager : Node
     public void StartGame()
     {
         GetTree().ChangeSceneToFile(Level01Scene);
+    }
+
+    public void StartSceneTest()
+    {
+        GetTree().ChangeSceneToFile(SceneTestScene);
     }
 
     public void QuitToMenu()

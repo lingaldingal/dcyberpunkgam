@@ -56,6 +56,11 @@ layout_mode = 2
 custom_minimum_size = Vector2(240, 48)
 text = "CONTINUE"
 
+[node name="SceneTest" type="Button" parent="Center/Panel"]
+layout_mode = 2
+custom_minimum_size = Vector2(240, 48)
+text = "SCENE TEST"
+
 [node name="Quit" type="Button" parent="Center/Panel"]
 layout_mode = 2
 custom_minimum_size = Vector2(240, 48)

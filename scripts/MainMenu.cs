@@ -7,17 +7,20 @@ public partial class MainMenu : Control
     private Button _newGameButton = null!;
     private Button _continueButton = null!;
     private Button _quitButton = null!;
+    private Button _sceneTestButton = null!;
     private Label _statusLabel = null!;
 
     public override void _Ready()
     {
         _newGameButton = GetNode<Button>("Center/Panel/NewGame");
         _continueButton = GetNode<Button>("Center/Panel/Continue");
+        _sceneTestButton = GetNode<Button>("Center/Panel/SceneTest");
         _quitButton = GetNode<Button>("Center/Panel/Quit");
         _statusLabel = GetNode<Label>("Center/Panel/Status");
 
         _newGameButton.Pressed += OnNewGamePressed;
         _continueButton.Pressed += OnContinuePressed;
+        _sceneTestButton.Pressed += OnSceneTestPressed;
         _quitButton.Pressed += OnQuitPressed;
     }
 
@@ -30,6 +33,11 @@ public partial class MainMenu : Control
     {
         // Placeholder: no save system yet.
         _statusLabel.Text = "No saved game yet.";
+    }
+
+    private void OnSceneTestPressed()
+    {
+        GameManager.Instance.StartSceneTest();
     }
 
     private void OnQuitPressed()
