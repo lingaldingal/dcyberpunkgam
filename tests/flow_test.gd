@@ -21,11 +21,35 @@ func _initialize() -> void:
 	_run_flow()
 
 
-# Set <rolls> on the turn system, then let Level01 settle (including any
-# armed enemy auto-move) so the test observes a stable state.
+# Let Level01 settle: if the active combatant is an enemy, wait for its
+# auto-move to fire and its turn to auto-end (~12 frames); otherwise a single
+# frame is enough.
+func _settle(level: Node) -> void:
+	if level.GetCurrentName() in ["Gutter", "Slick", "Brute", "Wisp"]:
+		for i in 20:
+			await process_frame
+	else:
+		await process_frame
+
+
+# Set <rolls> on the turn system, then let the level settle (including any
+# armed enemy auto-move + auto turn-end).
 func _set_rolls(level: Node, rolls: Array) -> void:
 	level.SetInitiativeRolls(rolls)
-	for i in 16:
+	await _settle(level)
+
+
+# Verify <expected> is the current combatant, then advance past their turn:
+# enemies auto-move + auto-end (wait for it); party members use END TURN.
+func _advance_turn(level: Node, end_turn: Button, expected: String) -> void:
+	_check(level.GetCurrentName() == expected,
+			"turn belongs to %s (got '%s')" % [expected, level.GetCurrentName()])
+	if expected in ["Gutter", "Slick", "Brute", "Wisp"]:
+		# Enemy: wait for the auto-move to fire and the turn to auto-end.
+		for i in 20:
+			await process_frame
+	else:
+		end_turn.pressed.emit()
 		await process_frame
 
 
@@ -78,7 +102,9 @@ func _run_flow() -> void:
 	_check(Array(level.GetInitiativeOrderNames()) ==
 			["Brute", "Rook", "Slick", "Vex", "Gutter", "Kaito", "Mira", "Wisp"],
 			"turn order is descending total w/ tiebreak (got %s)" % str(level.GetInitiativeOrderNames()))
-	_check(level.GetCurrentName() == "Brute", "round 1 starts with Brute (got '%s')" % level.GetCurrentName())
+	# Brute (enemy) auto-ends its turn during _settle, so Rook is now current.
+	_check(level.GetCurrentName() == "Rook",
+			"Brute auto-ended, Rook is next (got '%s')" % level.GetCurrentName())
 
 	# A high d5 roll can overtake a higher-Agility character:
 	# roll [5,1,1,1,1,1,1,1] -> Vex 17, Brute 17 (tie -> Brute higher Agi),
@@ -89,13 +115,13 @@ func _run_flow() -> void:
 			"high d5 roll lifts Vex to 2nd (got %s)" % str(level.GetInitiativeOrderNames()))
 
 	# --- Turn advancement: everyone acts once, then a new round begins. ---
+	# Enemies auto-move + auto-end; party members use END TURN.
 	await _set_rolls(level, [1, 1, 1, 1, 1, 1, 1, 1])
+	# Brute auto-ended during settle. Remaining order: Rook..Wisp.
 	var expected := ["Brute", "Rook", "Slick", "Vex", "Gutter", "Kaito", "Mira", "Wisp"]
-	for i in 8:
-		_check(level.GetCurrentName() == expected[i],
-				"turn %d belongs to %s (got '%s')" % [i, expected[i], level.GetCurrentName()])
-		end_turn.pressed.emit()
-		await process_frame
+	var remaining := ["Rook", "Slick", "Vex", "Gutter", "Kaito", "Mira", "Wisp"]
+	for i in remaining.size():
+		await _advance_turn(level, end_turn, remaining[i])
 	# After all 8 acted, a new round begins. Initiative was rolled once, so
 	# the order persists into round 2 (no re-roll) and round 3.
 	_check(level.GetRound() == 2, "new round starts after everyone acted (got %d)" % level.GetRound())
@@ -104,36 +130,37 @@ func _run_flow() -> void:
 			"initiative order persists into round 2 (got %s)" % str(level.GetInitiativeOrderNames()))
 	_check(Array(level.GetInitiativeTotals()) == [13, 11, 16, 11, 12, 14, 17, 10],
 			"initiative totals persist into round 2 (got %s)" % str(level.GetInitiativeTotals()))
-	for i in 8:
-		_check(level.GetCurrentName() == expected[i],
-				"round 2 turn %d belongs to %s (got '%s')" % [i, expected[i], level.GetCurrentName()])
-		end_turn.pressed.emit()
-		await process_frame
+	# Round 2: Brute is current (enemy, will auto-end).
+	await _advance_turn(level, end_turn, "Brute")
+	var round2_rest := ["Rook", "Slick", "Vex", "Gutter", "Kaito", "Mira", "Wisp"]
+	for i in round2_rest.size():
+		await _advance_turn(level, end_turn, round2_rest[i])
 	_check(level.GetRound() == 3, "round 3 starts after second pass (got %d)" % level.GetRound())
 	_check(Array(level.GetInitiativeOrderNames()) == expected,
 			"initiative order persists into round 3 (got %s)" % str(level.GetInitiativeOrderNames()))
 
 	# --- Movement range: 5 + Agility/2 (floored), per active combatant. ---
+	# Range is read right after ForceCurrent (before any settle), because an
+	# enemy's auto-move would end its turn and hand the range to the next
+	# combatant. Party members don't auto-end, so Vex is safe to settle.
 	await _set_rolls(level, [1, 1, 1, 1, 1, 1, 1, 1])
 	# Force Vex (agi 12) active -> range 5 + 6 = 11.
 	level.ForceCurrent("Vex")
-	await process_frame
+	await _settle(level)
 	_check(level.GetCurrentName() == "Vex", "Vex is active for movement test")
 	_check(level.GetMovementRange() == 11, "Vex (12) moves 11 (got %d)" % level.GetMovementRange())
 	# Force Wisp (agi 9) active -> range 5 + 4 = 9 (floor of 9/2).
 	level.ForceCurrent("Wisp")
-	await process_frame
 	_check(level.GetMovementRange() == 9, "Wisp (9) moves 9 (got %d)" % level.GetMovementRange())
 	# Force Brute (agi 16) active -> range 5 + 8 = 13.
 	level.ForceCurrent("Brute")
-	await process_frame
 	_check(level.GetMovementRange() == 13, "Brute (16) moves 13 (got %d)" % level.GetMovementRange())
 
 	# --- Pathfinding: reachable set respects range + obstacles + tokens. ---
 	# Vex starts at (1,1), agi 12 -> range 11. Rook sits at (1,2), so the
 	# straight-down route is blocked and the left column (x=0) is the detour.
 	level.ForceCurrent("Vex")
-	await process_frame
+	await _settle(level)
 	# Own cell is reachable.
 	_check(level.IsReachable(1, 1), "Vex's own cell is reachable")
 	# One step left is reachable.
@@ -146,24 +173,32 @@ func _run_flow() -> void:
 	_check(not level.IsReachable(5, 1), "obstacle (5,1) not reachable")
 
 	# --- WASD movement nudges one tile within range. ---
-	level.ForceCurrent("Vex")
-	await process_frame
 	var p0 := level.get_node("Board/P0")
+	_check(not level.HasMovedThisTurn(), "Vex has not moved yet")
 	_press_key(KEY_A)
 	await process_frame
 	_check(p0.position == Vector2(0, TILE), "Vex moved left to (0,1)")
+	_check(level.HasMovedThisTurn(), "Vex has moved this turn")
 
+	# A party member moves only once per turn: second press is ignored.
 	_press_key(KEY_S)
 	await process_frame
-	_check(p0.position == Vector2(0, 2 * TILE), "Vex moved down to (0,2)")
+	_check(p0.position == Vector2(0, TILE), "second WASD move ignored (once per turn)")
 
-	# Right is blocked: Rook (P2) stands at (1,2).
-	_press_key(KEY_D)
+	# --- UNDO restores the turn-start cell and re-arms the move. ---
+	level.UndoMove()
 	await process_frame
-	_check(p0.position == Vector2(0, 2 * TILE), "Vex blocked by Rook at (1,2)")
+	_check(p0.position == Vector2(1 * TILE, 1 * TILE), "undo restored Vex to (1,1)")
+	_check(not level.HasMovedThisTurn(), "undo re-armed the move")
+	_press_key(KEY_A)
+	await process_frame
+	_check(p0.position == Vector2(0, TILE), "Vex moved left to (0,1) after undo")
 
 	# --- Click-to-move: click a reachable tile and Vex jumps there (BFS). ---
-	# Vex is at (0,2). Click (0,6): 4 tiles down, reachable, straight path.
+	# Undo the WASD move so Vex can act again, then click a reachable tile.
+	level.UndoMove()
+	await process_frame
+	# Vex is at (1,1). Click (0,6): 6 tiles via left column, reachable.
 	var board := level.get_node("Board")
 	var click := InputEventMouseButton.new()
 	click.button_index = MOUSE_BUTTON_LEFT
@@ -173,8 +208,9 @@ func _run_flow() -> void:
 	await process_frame
 	_check(p0.position == Vector2(0, 6 * TILE), "click moved Vex to (0,6)")
 
-	# --- Enemy auto-move: on an enemy's turn it steps one random tile. ---
-	level.ForceCurrent("Brute")  # Brute at (17,2); open neighbours exist
+	# --- Enemy auto-move: on an enemy's turn it steps one random tile,
+	# then its turn ends automatically (no player input needed). ---
+	level.ForceCurrent("Brute")
 	await process_frame
 	var brute_before: Vector2i = level.GetTokenCell("Brute")
 	# Wait for the enemy auto-move (armed for 12 frames) to fire.
@@ -184,6 +220,8 @@ func _run_flow() -> void:
 	var moved := Vector2i(brute_after.x - brute_before.x, brute_after.y - brute_before.y)
 	_check(abs(moved.x) + abs(moved.y) == 1,
 			"enemy Brute auto-moved one tile (delta %s)" % str(moved))
+	_check(level.GetCurrentName() != "Brute",
+			"enemy turn auto-ended after moving (now '%s')" % level.GetCurrentName())
 
 	# BACK returns to the menu.
 	level.get_node("Center/Panel/Actions/Back").pressed.emit()

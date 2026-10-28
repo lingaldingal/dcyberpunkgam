@@ -62,6 +62,11 @@ layout_mode = 2
 custom_minimum_size = Vector2(180, 48)
 text = "END TURN"
 
+[node name="Undo" type="Button" parent="Center/Panel/Actions"]
+layout_mode = 2
+custom_minimum_size = Vector2(120, 48)
+text = "UNDO"
+
 [node name="Back" type="Button" parent="Center/Panel/Actions"]
 layout_mode = 2
 custom_minimum_size = Vector2(180, 48)
