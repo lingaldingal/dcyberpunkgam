@@ -32,6 +32,13 @@ public partial class Level01 : Control
     // Frames an enemy waits before acting, so its move is visible.
     private const int EnemyThinkFrames = 12;
 
+    // Shoot: target must be exactly this many squares away along one of the
+    // 8 straight lines (horizontal, vertical or diagonal), and deals 2 damage.
+    private const int ShootRange = 4;
+    private const int ShootDamage = 2;
+
+    public enum ActionMode { Move, Shoot }
+
     private static readonly Vector2I[] Dirs =
     {
         new(1, 0), new(-1, 0), new(0, 1), new(0, -1),
@@ -57,14 +64,14 @@ public partial class Level01 : Control
     // Roster: party (0-3) then enemies (4-7). Token index == roster index.
     private static readonly Character[] Roster =
     {
-        new("Vex", new Color(0.85f, 0.25f, 0.35f), 12, false),
-        new("Kaito", new Color(0.25f, 0.75f, 0.9f), 10, false),
-        new("Rook", new Color(0.4f, 0.85f, 0.45f), 15, false),
-        new("Mira", new Color(0.95f, 0.75f, 0.25f), 10, false),
-        new("Gutter", new Color(0.6f, 0.3f, 0.8f), 11, true),
-        new("Slick", new Color(0.9f, 0.4f, 0.7f), 13, true),
-        new("Brute", new Color(0.5f, 0.2f, 0.2f), 16, true),
-        new("Wisp", new Color(0.7f, 0.7f, 0.9f), 9, true),
+        new("Vex", new Color(0.85f, 0.25f, 0.35f), 12, 11, false),
+        new("Kaito", new Color(0.25f, 0.75f, 0.9f), 10, 9, false),
+        new("Rook", new Color(0.4f, 0.85f, 0.45f), 15, 12, false),
+        new("Mira", new Color(0.95f, 0.75f, 0.25f), 10, 8, false),
+        new("Gutter", new Color(0.6f, 0.3f, 0.8f), 11, 10, true),
+        new("Slick", new Color(0.9f, 0.4f, 0.7f), 13, 13, true),
+        new("Brute", new Color(0.5f, 0.2f, 0.2f), 16, 12, true),
+        new("Wisp", new Color(0.7f, 0.7f, 0.9f), 9, 7, true),
     };
 
     // Starting cells, one per roster entry.
@@ -77,15 +84,31 @@ public partial class Level01 : Control
     private readonly List<Control> _tokens = new();
     private readonly List<ColorRect> _tokenBodies = new();
     private readonly List<ColorRect> _highlights = new();
+    private readonly List<Label> _tokenHpLabels = new();
     private readonly System.Random _rng = new();
 
     private TurnSystem _turns = null!;
     private bool _turnActive;
     private Dictionary<Vector2I, int> _reachable = new();
+    private HashSet<Vector2I> _shootTargets = new();
 
     // A party member may move once per turn; UNDO (before END TURN) re-arms.
     private bool _movedThisTurn;
     private Vector2I _turnStartCell;
+
+    // One action per turn: move, shoot, or wait. <see cref="_actionMode"/> is
+    // which board-click mode is active; <see cref="_actionUsed"/> latches once
+    // the combatant has acted this turn.
+    private ActionMode _actionMode = ActionMode.Move;
+    private bool _actionUsed;
+
+    // The actions menu: a rectangular panel pinned to the bottom-left with the
+    // active character's name on top and the Shoot / Move / Wait buttons below.
+    private PanelContainer _actionMenu = null!;
+    private Label _actionMenuName = null!;
+    private Button _shootButton = null!;
+    private Button _moveButton = null!;
+    private Button _waitButton = null!;
 
     // Enemy auto-move: armed when an enemy is active; fires after a short delay.
     private bool _enemyMoveArmed;
@@ -121,6 +144,7 @@ public partial class Level01 : Control
         })
             GetNode<Control>(name).MouseFilter = MouseFilterEnum.Ignore;
         BuildBoard();
+        BuildActionMenu();
         InitializeCamera();
 
         _turnLabel = GetNode<Label>("Center/Panel/HUD/Turn");
@@ -152,6 +176,7 @@ public partial class Level01 : Control
         }
 
         UpdateCamera((float)delta);
+        ClampActionMenu();
     }
 
     // WASD pans the camera (held keys, so it works while a button has focus).
@@ -252,10 +277,10 @@ public partial class Level01 : Control
 
     private void OnBoardGuiInput(InputEvent @event)
     {
-        if (!_turnActive || _turns.Current.IsEnemy)
+        if (!_turnActive || _turns.Current.IsEnemy || _actionUsed)
             return;
         if (@event is InputEventMouseButton mouse && mouse.Pressed && mouse.ButtonIndex == MouseButton.Left)
-            TryMoveToward(mouse.Position);
+            TryBoardClick(mouse.Position);
     }
 
     private void OnEndTurnPressed()
@@ -268,13 +293,16 @@ public partial class Level01 : Control
     }
 
     // Restore the active party member to the cell they started their turn in.
-    // Allowed once, before END TURN, so a move can be reconsidered.
+    // Allowed once, before END TURN, so a move can be reconsidered. Undoing
+    // also re-arms the turn's action (in the current mode).
     private void OnUndoPressed()
     {
         if (!_turnActive || _turns.Current.IsEnemy || !_movedThisTurn)
             return;
         MoveTokenTo(_turns.CurrentIndex, _turnStartCell);
         _movedThisTurn = false;
+        _actionUsed = false;
+        UpdateActionMenu();
     }
 
     private void OnBackPressed()
@@ -365,6 +393,45 @@ public partial class Level01 : Control
     /// </summary>
     public void SetPanKey(Key key) => _forcedPanKey = key;
 
+    /// <summary>Current HP of the named combatant.</summary>
+    public int GetHitPoints(string name)
+    {
+        int index = IndexOf(name);
+        return index < 0 ? -1 : _turns.Combatants[index].HitPoints;
+    }
+
+    /// <summary>Whether the named combatant is still on the map.</summary>
+    public bool IsAlive(string name)
+    {
+        int index = IndexOf(name);
+        return index >= 0 && !_turns.Combatants[index].IsDead;
+    }
+
+    /// <summary>Whether cell (x, y) is a valid shoot target for the active combatant.</summary>
+    public bool IsShootTarget(int x, int y) => _shootTargets.Contains(new Vector2I(x, y));
+
+    /// <summary>Test hook: teleport a token to a cell (used to set up shoot distances).</summary>
+    public void SetTokenCell(string name, int x, int y)
+    {
+        int index = IndexOf(name);
+        if (index < 0)
+            return;
+        _tokens[index].Position = new Vector2(x * TileSize, y * TileSize);
+    }
+
+    /// <summary>Test hook: the actions menu's position and size.</summary>
+    public Vector2 GetActionMenuPos() => _actionMenu.Position;
+
+    private int IndexOf(string name)
+    {
+        for (int i = 0; i < Roster.Length; i++)
+        {
+            if (Roster[i].Name == name)
+                return i;
+        }
+        return -1;
+    }
+
     // --- Turn / movement --------------------------------------------------
 
     private void SetActive()
@@ -373,13 +440,16 @@ public partial class Level01 : Control
         _turnActive = true;
         _movedThisTurn = false;
         _enemyActed = false;
+        _actionUsed = false;
         _turnStartCell = CurrentCell();
         _turnLabel.Text = $"ROUND {_turns.Round} — TURN: {_turns.Current.Name}";
         _infoLabel.Text = BuildInitiativeInfo();
         for (int i = 0; i < _tokenBodies.Count; i++)
             _tokenBodies[i].Modulate = i == index ? Colors.White : new Color(1, 1, 1, 0.55f);
         _reachable = ComputeDistances(CurrentCell(), _turns.Current.MovementRange, index);
+        ComputeShootTargets();
         RefreshHighlights();
+        UpdateActionMenu();
 
         _enemyMoveArmed = _turns.Current.IsEnemy;
         _enemyMoveFrames = EnemyThinkFrames;
@@ -394,7 +464,7 @@ public partial class Level01 : Control
             parts.Add($"{c.Name} {c.Agility}+{_turns.Roll[i]}{(c.IsEnemy ? " (E)" : "")}");
         }
         return string.Join(" · ", parts)
-            + "  —  initiative d5 + Agility sets order (high first) · move = 5 + Agi/2 · click to move · WASD pans the map · END TURN";
+            + "  —  initiative d5 + Agility sets order (high first) · move = 5 + Agi/2 · one action per turn (SHOOT / MOVE / WAIT) · shoot = 2 dmg, 4 squares in a straight line · HP = 5 + Con · WASD pans the map · END TURN";
     }
 
     // BFS: shortest-path distance from <start> to every reachable tile, treating
@@ -433,13 +503,74 @@ public partial class Level01 : Control
         if (!_reachable.ContainsKey(next))
             return;
         MovePartyTo(next);
+        MarkActionUsed();
     }
 
-    private void TryMoveToward(Vector2 localPos)
+    private void TryBoardClick(Vector2 localPos)
     {
-        int x = (int)(localPos.X / TileSize);
-        int y = (int)(localPos.Y / TileSize);
-        MoveTo(new Vector2I(x, y));
+        var cell = new Vector2I((int)(localPos.X / TileSize), (int)(localPos.Y / TileSize));
+        if (_actionMode == ActionMode.Shoot)
+            TryShootAt(cell);
+        else
+            MoveTo(cell);
+    }
+
+    // Shoot: the target must sit exactly ShootRange squares away along one of
+    // the 8 straight lines (horizontal, vertical, diagonal). Deals 2 damage.
+    private void TryShootAt(Vector2I cell)
+    {
+        if (!_shootTargets.Contains(cell))
+            return;
+        int targetIndex = -1;
+        for (int i = 0; i < _tokens.Count; i++)
+        {
+            if ((Vector2I)(_tokens[i].Position / TileSize) == cell)
+            {
+                targetIndex = i;
+                break;
+            }
+        }
+        if (targetIndex < 0)
+            return;
+        var target = _turns.Combatants[targetIndex];
+        if (target.IsDead)
+            return;
+        target.HitPoints -= ShootDamage;
+        _infoLabel.Text = $"{_turns.Current.Name} shoots {target.Name} for {ShootDamage} ({target.HitPoints} HP left)";
+        RefreshTokenHp(targetIndex);
+        if (target.IsDead)
+            KillToken(targetIndex);
+        MarkActionUsed();
+    }
+
+    // One action per turn: once the active combatant has moved, shot or waited,
+    // board clicks are ignored and the action buttons disable (END TURN /
+    // WAIT / UNDO stay available).
+    private void MarkActionUsed()
+    {
+        _actionUsed = true;
+        UpdateActionMenu();
+    }
+
+    private void OnWaitPressed()
+    {
+        if (!_turnActive || _actionUsed)
+            return;
+        _infoLabel.Text = $"{_turns.Current.Name} waits.";
+        MarkActionUsed();
+    }
+
+    private void OnShootModePressed() => SetActionMode(ActionMode.Shoot);
+    private void OnMoveModePressed() => SetActionMode(ActionMode.Move);
+
+    // Switch the board-click mode. Re-arms the action so the combatant can act
+    // in the new mode (mode switching itself does not consume the action).
+    public void SetActionMode(ActionMode mode)
+    {
+        _actionMode = mode;
+        _actionUsed = false;
+        UpdateActionMenu();
+        RefreshHighlights();
     }
 
     private void MoveTokenTo(int index, Vector2I cell)
@@ -449,10 +580,10 @@ public partial class Level01 : Control
         RefreshHighlights();
     }
 
-    // Player move: one move per turn; the turn-start cell is remembered so
-    // UNDO can restore it before END TURN. The reachable set is NOT recomputed
-    // here — it stays frozen to the turn-start position so the full range
-    // (and highlights) remain valid for the rest of the turn.
+    // Player move: the turn-start cell is remembered so UNDO can restore it
+    // before END TURN. The reachable set is NOT recomputed here — it stays
+    // frozen to the turn-start position so the full range (and highlights)
+    // remain valid for the rest of the turn.
     private void MovePartyTo(Vector2I next)
     {
         if (_movedThisTurn)
@@ -496,16 +627,50 @@ public partial class Level01 : Control
         return (Vector2I)(_tokens[_turns.CurrentIndex].Position / TileSize);
     }
 
+    // A cell is occupied by a LIVE token. Dead tokens are removed from the map
+    // and no longer block movement.
     private bool IsOccupiedBy(Vector2I cell, int ignoreIndex)
     {
         for (int i = 0; i < _tokens.Count; i++)
         {
             if (i == ignoreIndex)
                 continue;
+            if (_tokens[i].Visible == false)
+                continue;
             if ((Vector2I)(_tokens[i].Position / TileSize) == cell)
                 return true;
         }
         return false;
+    }
+
+    // A combatant is a shoot target iff it is alive and sits exactly
+    // ShootRange squares away from <from> along one of the 8 straight lines
+    // (horizontal, vertical, diagonal).
+    private bool IsShootTarget(Vector2I from, Vector2I to)
+    {
+        int dx = to.X - from.X;
+        int dy = to.Y - from.Y;
+        return (Math.Abs(dx) == ShootRange && dy == 0)
+            || (Math.Abs(dy) == ShootRange && dx == 0)
+            || (Math.Abs(dx) == ShootRange && Math.Abs(dy) == ShootRange);
+    }
+
+    // Rebuild the shoot-target set for the active combatant.
+    private void ComputeShootTargets()
+    {
+        _shootTargets.Clear();
+        if (_turns.Combatants[_turns.CurrentIndex].IsEnemy)
+            return;
+        var from = CurrentCell();
+        for (int x = 0; x < GridWidth; x++)
+        {
+            for (int y = 0; y < GridHeight; y++)
+            {
+                var cell = new Vector2I(x, y);
+                if (IsShootTarget(from, cell))
+                    _shootTargets.Add(cell);
+            }
+        }
     }
 
     private void RefreshHighlights()
@@ -514,17 +679,38 @@ public partial class Level01 : Control
             rect.QueueFree();
         _highlights.Clear();
 
-        foreach (var cell in _reachable.Keys)
+        // Move mode: green highlights for reachable tiles. Shoot mode: red
+        // highlights on the 8 shoot-target tiles (only when the active
+        // combatant has not used its action yet).
+        if (_actionMode == ActionMode.Shoot && !_turns.Combatants[_turns.CurrentIndex].IsEnemy)
         {
-            var highlight = new ColorRect
+            foreach (var cell in _shootTargets)
             {
-                Position = new Vector2(cell.X * TileSize, cell.Y * TileSize),
-                Size = new Vector2(TileSize, TileSize),
-                Color = new Color(0.3f, 0.9f, 0.6f, 0.18f),
-                MouseFilter = MouseFilterEnum.Ignore,
-            };
-            _board.AddChild(highlight);
-            _highlights.Add(highlight);
+                var highlight = new ColorRect
+                {
+                    Position = new Vector2(cell.X * TileSize, cell.Y * TileSize),
+                    Size = new Vector2(TileSize, TileSize),
+                    Color = new Color(0.95f, 0.35f, 0.3f, 0.25f),
+                    MouseFilter = MouseFilterEnum.Ignore,
+                };
+                _board.AddChild(highlight);
+                _highlights.Add(highlight);
+            }
+        }
+        else
+        {
+            foreach (var cell in _reachable.Keys)
+            {
+                var highlight = new ColorRect
+                {
+                    Position = new Vector2(cell.X * TileSize, cell.Y * TileSize),
+                    Size = new Vector2(TileSize, TileSize),
+                    Color = new Color(0.3f, 0.9f, 0.6f, 0.18f),
+                    MouseFilter = MouseFilterEnum.Ignore,
+                };
+                _board.AddChild(highlight);
+                _highlights.Add(highlight);
+            }
         }
     }
 
@@ -576,9 +762,129 @@ public partial class Level01 : Control
                 Size = new Vector2(TileSize, TileSize),
             };
             token.AddChild(label);
+            // Small HP readout above the token.
+            var hpLabel = new Label
+            {
+                Text = $"{Roster[i].HitPoints}",
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Position = new Vector2(0, -14),
+                Size = new Vector2(TileSize, 14),
+                MouseFilter = MouseFilterEnum.Ignore,
+            };
+            hpLabel.Modulate = new Color(0.9f, 0.95f, 1f);
+            hpLabel.AddThemeFontSizeOverride("font_size", 12);
+            token.AddChild(hpLabel);
             _board.AddChild(token);
             _tokens.Add(token);
             _tokenBodies.Add(body);
+            _tokenHpLabels.Add(hpLabel);
         }
+    }
+
+    private void RefreshTokenHp(int index)
+    {
+        if (index >= 0 && index < _tokenHpLabels.Count)
+            _tokenHpLabels[index].Text = $"{_turns.Combatants[index].HitPoints}";
+    }
+
+    // HP hit 0: remove the token from the map. It no longer blocks movement
+    // (see IsOccupiedBy) and its turn is skipped (see TurnSystem.EndTurn).
+    private void KillToken(int index)
+    {
+        _tokens[index].Visible = false;
+        RefreshTokenHp(index);
+    }
+
+    // --- Actions menu -------------------------------------------------------
+
+    // The rectangular actions menu: pinned to the bottom-left, the active
+    // character's name on top, then the SHOOT / MOVE / WAIT buttons.
+    private void BuildActionMenu()
+    {
+        _actionMenu = new PanelContainer
+        {
+            Name = "ActionMenu",
+            MouseFilter = MouseFilterEnum.Stop,
+            ZIndex = 10,
+        };
+        var panelStyle = new StyleBoxFlat
+        {
+            BgColor = new Color(0.07f, 0.08f, 0.11f, 0.92f),
+            BorderColor = new Color(0.35f, 0.6f, 0.9f, 0.8f),
+            BorderWidthLeft = 2,
+            BorderWidthTop = 2,
+            BorderWidthRight = 2,
+            BorderWidthBottom = 2,
+            CornerRadiusTopLeft = 8,
+            CornerRadiusTopRight = 8,
+            CornerRadiusBottomLeft = 8,
+            CornerRadiusBottomRight = 8,
+            ContentMarginLeft = 12,
+            ContentMarginTop = 10,
+            ContentMarginRight = 12,
+            ContentMarginBottom = 10,
+        };
+        _actionMenu.AddThemeStyleboxOverride("panel", panelStyle);
+        var vbox = new VBoxContainer { Name = "VBox" };
+        vbox.AddThemeConstantOverride("separation", 6);
+        _actionMenuName = new Label
+        {
+            Name = "Name",
+            Text = "…",
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        _actionMenuName.Modulate = new Color(0.85f, 0.92f, 1f);
+        _actionMenuName.AddThemeFontSizeOverride("font_size", 18);
+        vbox.AddChild(_actionMenuName);
+        var actions = new HBoxContainer { Name = "Actions" };
+        actions.AddThemeConstantOverride("separation", 8);
+        _shootButton = new Button { Name = "Shoot", Text = "SHOOT", CustomMinimumSize = new Vector2(84, 34) };
+        _moveButton = new Button { Name = "Move", Text = "MOVE", CustomMinimumSize = new Vector2(84, 34) };
+        _waitButton = new Button { Name = "Wait", Text = "WAIT", CustomMinimumSize = new Vector2(84, 34) };
+        _shootButton.Pressed += OnShootModePressed;
+        _moveButton.Pressed += OnMoveModePressed;
+        _waitButton.Pressed += OnWaitPressed;
+        actions.AddChild(_shootButton);
+        actions.AddChild(_moveButton);
+        actions.AddChild(_waitButton);
+        vbox.AddChild(actions);
+        _actionMenu.AddChild(vbox);
+        AddChild(_actionMenu);
+    }
+
+    private void UpdateActionMenu()
+    {
+        if (_actionMenuName == null)
+            return;
+        _actionMenuName.Text = _turns.Current.Name;
+        _shootButton.Disabled = _actionUsed || _turns.Current.IsEnemy;
+        _moveButton.Disabled = _actionUsed || _turns.Current.IsEnemy;
+        _waitButton.Disabled = _actionUsed || _turns.Current.IsEnemy;
+        _shootButton.Modulate = _actionMode == ActionMode.Shoot ? Colors.White : new Color(1, 1, 1, 0.55f);
+        _moveButton.Modulate = _actionMode == ActionMode.Move ? Colors.White : new Color(1, 1, 1, 0.55f);
+    }
+
+    // Keep the menu on screen at all times: it hugs the bottom-left corner
+    // with a margin, clamped for very small viewports (menu is ~300x120, so
+    // it always fits the supported 1280x720+ windows).
+    private void ClampActionMenu()
+    {
+        if (_actionMenu == null)
+            return;
+        const int Margin = 12;
+        float x = Margin;
+        float y = Margin;
+        if (Size.X > 0 && _actionMenu.Size.X > 0 && Margin + _actionMenu.Size.X > Size.X)
+            x = Mathf.Max(0, Size.X - _actionMenu.Size.X - Margin);
+        if (Size.Y > 0 && _actionMenu.Size.Y > 0)
+        {
+            // Bottom-left: pin the menu's bottom edge above the screen's
+            // bottom edge; clamp to the top if the viewport is too short.
+            y = Size.Y - _actionMenu.Size.Y - Margin;
+            if (y < Margin)
+                y = Margin;
+        }
+        _actionMenu.Position = new Vector2(x, y);
     }
 }

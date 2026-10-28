@@ -18,6 +18,7 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - `tests/flow_test.gd` — headless SceneTree functional test (menu → level → 8-combatant initiative → rounds → movement range → BFS reachability → **camera panning + clamping** → **mouse click-to-move** → once-per-turn + UNDO → enemy auto-move + auto turn-end → back). ~52 checks.
 - `tests/cutscene_test.gd` — headless functional test (menu → SCENE TEST → reveal, speaker alternation, highlight, back)
 - `tests/resolution_test.gd` — headless test: menu RESOLUTION button cycles 1280x720 → 1600x900 → 1920x1080 → back
+- `tests/combat_test.gd` — headless combat test (HP = 5 + Con values, actions menu placement + name, shoot range in 8 directions, 2 damage, once-per-turn, WAIT, death removes token + skips turns). ~35 checks.
 - `readme.me` — pre-existing file, untouched
 
 ## Cutscene (scene_test)
@@ -106,6 +107,29 @@ SCENE TEST button:
   `Key.None` clears — used to test panning headless where `Input.IsKeyPressed`
   is never true).
 
+## Combat (HP, Shoot, Wait, Actions Menu)
+- **Constitution + HP**: every combatant has `Constitution` (7–13) and
+  `HitPoints = 5 + Constitution` (see `Character.cs`). Party: Vex 11,
+  Kaito 9, Rook 12, Mira 8. Enemies: Gutter 10, Slick 13, Brute 12, Wisp 7.
+  HP readout floats above each token and updates on damage.
+- **One action per turn** (`_actionUsed`): a party member picks exactly ONE of
+  SHOOT / MOVE / WAIT from the **actions menu** (bottom-left panel:
+  character name on top, SHOOT / MOVE / WAIT buttons; clamped to stay on
+  screen via `ClampActionMenu()`). Mode switching is free; performing the
+  action consumes it. UNDO re-arms the action.
+- **Shoot**: exactly 2 damage to an enemy standing exactly 4 squares away in
+  a straight line — horizontal, vertical, OR 45° diagonal (8 directions;
+  `IsShootTarget` + `ComputeShootTargets`). Valid targets highlight red in
+  shoot mode.
+- **Death**: HP ≤ 0 → `IsDead`; the token is hidden from the map, no longer
+  blocks movement (`IsOccupiedBy` skips the dead), and `TurnSystem.EndTurn`
+  skips dead combatants when advancing (round wraps when everyone is dead).
+- Test hooks: `GetHitPoints(string)`, `IsAlive(string)`, `IsShootTarget(int,
+  int)`, `SetActionMode(ActionMode)`, `SetTokenCell(string, int, int)`,
+  `GetActionMenuPos()`, `ForceCurrent(string)`. NOTE: set tokens' cells
+  BEFORE `ForceCurrent` — shoot targets/move range are computed from the
+  active token's position in `SetActive()`.
+
 ## Resolution selector (MainMenu)
 `MainMenu` has a **RESOLUTION** button that cycles the window through three
 supported sizes — **1280×720 → 1600×900 → 1920×1080 → back** — via
@@ -148,8 +172,9 @@ binary. Build the C# first.
 GODOT=/home/bigal/Applications/GodotMono/Godot_v4.7.2-stable_mono_linux_x86_64/Godot_v4.7.2-stable_mono_linux.x86_64
 $GODOT --headless --path . --import                    # clean import check
 $GODOT --headless --path . --quit-after 120            # smoke run (main scene = menu)
-$GODOT --headless --path . -s res://tests/flow_test.gd      # functional flow test (36 checks)
+$GODOT --headless --path . -s res://tests/flow_test.gd      # functional flow test (52 checks)
 $GODOT --headless --path . -s res://tests/cutscene_test.gd  # cutscene test (14 checks)
+$GODOT --headless --path . -s res://tests/combat_test.gd    # combat: HP/shoot/death/actions menu (35 checks)
 ```
 Headless alone is NOT enough for UI: it never renders, so off-screen controls
 are invisible to it. There's a real Xorg at `DISPLAY=:0.0` (no Xvfb/xdotool here).

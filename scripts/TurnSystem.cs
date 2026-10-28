@@ -35,6 +35,9 @@ public class TurnSystem
     public Character Current => Combatants[_order[_pointer]];
     public int CurrentIndex => _order[_pointer];
 
+    /// <summary>Test hook: whether a roster-index combatant is still alive.</summary>
+    public bool IsAlive(int index) => !Combatants[index].IsDead;
+
     /// <summary>
     /// Rolls initiative once, at the start of the encounter. The resulting
     /// order persists for the rest of the encounter; rounds no longer re-roll.
@@ -51,15 +54,24 @@ public class TurnSystem
         _pointer = 0;
     }
 
-    /// <summary>Advance to the next combatant; the persisted order is kept.</summary>
+    /// <summary>
+    /// Advance to the next combatant; the persisted order is kept. Dead
+    /// combatants are skipped. If everyone is dead, the round simply advances.
+    /// </summary>
     public void EndTurn()
     {
-        _pointer++;
-        if (_pointer >= _order.Length)
+        int guard = 0;
+        do
         {
-            Round++;
-            _pointer = 0;
+            _pointer++;
+            if (_pointer >= _order.Length)
+            {
+                Round++;
+                _pointer = 0;
+            }
+            guard++;
         }
+        while (guard < _order.Length + 1 && Combatants[_order[_pointer]].IsDead);
     }
 
     /// <summary>
