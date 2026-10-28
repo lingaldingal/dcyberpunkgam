@@ -13,7 +13,7 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - `scripts/Character.cs` — combatant data (Name, Color, Agility, `IsEnemy`, `MovementRange` = 5 + Agility/2 floored)
 - `scripts/TurnSystem.cs` — round-based initiative turn order (see below)
 - `dcyberpunkgam.csproj` / `dcyberpunkgam.sln` — .NET project (Godot.NET.Sdk 4.7.2, net8.0)
-- `tests/flow_test.gd` — headless SceneTree functional test (menu → level → 8-combatant initiative → rounds → movement range → BFS reachability → WASD/click movement → enemy auto-move → back)
+- `tests/flow_test.gd` — headless SceneTree functional test (menu → level → 8-combatant initiative → rounds → movement range → BFS reachability → WASD/click movement → once-per-turn + UNDO → enemy auto-move + auto turn-end → back). 36 checks.
 - `tests/cutscene_test.gd` — headless functional test (menu → SCENE TEST → reveal, speaker alternation, highlight, back)
 - `readme.me` — pre-existing file, untouched
 
@@ -59,13 +59,25 @@ SCENE TEST button:
   combatant can reach that cell within range. (Replaced an earlier
   `GetReachableCells()` that returned `Vector2I[]` — the array didn't export
   cleanly to GDScript, so it's a `bool` now.)
-- **Enemies auto-move** one tile toward a random walkable neighbor each frame
-  in `_Process`, but only while the armed combatant is still the current one
-  (guards against the turn-advancing mid-move). No combat logic yet.
+- **Party members move once per turn.** WASD nudges one tile; clicking a
+  reachable tile jumps there (BFS). The first move sets `_movedThisTurn`;
+  subsequent moves that turn are ignored. **UNDO** (button or `UndoMove()`)
+  restores the turn-start cell and re-arms the move — allowed once, before
+  END TURN. The reachable set is frozen to the turn-start position after a
+  move (not recomputed from the new position) so the full range stays valid
+  for the rest of the turn.
+- **Enemies auto-move** one tile in a random walkable direction after a short
+  delay (12 frames) in `_Process`, then **automatically end their turn**
+  (enemies have no other actions yet). Guarded by `_enemyActed` so the turn
+  ends exactly once. The player cannot control enemies: `_Input` and
+  `OnBoardGuiInput` both bail when `_turns.Current.IsEnemy`.
 - Map is 20 cols × 12 rows; obstacles + token positions mean some short
   straight-line targets need a detour (e.g. Vex at (1,1) can't reach (1,11)
   directly because Rook at (1,2) blocks the column — the left column detour is
   12 steps, just over Vex's range 11).
+- Scene has a third action button: **UNDO** (between END TURN and BACK).
+  Test hooks: `HasMovedThisTurn() -> bool`, `UndoMove()`, `ForceEnemyMove()`
+  (acts for the active enemy now: move + end turn).
 
 ## Build (C#)
 `dotnet` (SDK 8) is on PATH (`/usr/bin/dotnet`). Build before running:
@@ -85,7 +97,7 @@ GODOT=/home/bigal/Applications/GodotMono/Godot_v4.7.2-stable_mono_linux_x86_64/G
 ```
 $GODOT --headless --path . --import                    # clean import check
 $GODOT --headless --path . --quit-after 120            # smoke run (main scene = menu)
-$GODOT --headless --path . -s res://tests/flow_test.gd # functional flow test (45 checks)
+$GODOT --headless --path . -s res://tests/flow_test.gd # functional flow test
 ```
 Headless alone is NOT enough for UI: it never renders, so off-screen controls
 are invisible to it. To verify a menu actually displays, run on a virtual

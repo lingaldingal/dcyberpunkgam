@@ -76,14 +76,21 @@ public partial class Level01 : Control
     private bool _turnActive;
     private Dictionary<Vector2I, int> _reachable = new();
 
+    // A party member may move once per turn; UNDO (before END TURN) re-arms.
+    private bool _movedThisTurn;
+    private Vector2I _turnStartCell;
+
     // Enemy auto-move: armed when an enemy is active; fires after a short delay.
     private bool _enemyMoveArmed;
     private int _enemyMoveFrames;
+    // Set once the active enemy has moved, so the turn ends exactly once.
+    private bool _enemyActed;
 
     private Control _board = null!;
     private Label _turnLabel = null!;
     private Label _infoLabel = null!;
     private Button _endTurnButton = null!;
+    private Button _undoButton = null!;
     private Button _backButton = null!;
 
     public override void _Ready()
@@ -106,8 +113,10 @@ public partial class Level01 : Control
         _turnLabel = GetNode<Label>("Center/Panel/HUD/Turn");
         _infoLabel = GetNode<Label>("Center/Panel/HUD/Info");
         _endTurnButton = GetNode<Button>("Center/Panel/Actions/EndTurn");
+        _undoButton = GetNode<Button>("Center/Panel/Actions/Undo");
         _backButton = GetNode<Button>("Center/Panel/Actions/Back");
         _endTurnButton.Pressed += OnEndTurnPressed;
+        _undoButton.Pressed += OnUndoPressed;
         _backButton.Pressed += OnBackPressed;
 
         _turns = new TurnSystem(Roster.ToList());
@@ -134,7 +143,7 @@ public partial class Level01 : Control
     // so they work even while a button holds keyboard focus.
     public override void _Input(InputEvent @event)
     {
-        if (!_turnActive)
+        if (!_turnActive || _turns.Current.IsEnemy)
             return;
         if (@event is not InputEventKey key || !key.Pressed || key.Echo)
             return;
@@ -158,7 +167,7 @@ public partial class Level01 : Control
 
     private void OnBoardGuiInput(InputEvent @event)
     {
-        if (!_turnActive)
+        if (!_turnActive || _turns.Current.IsEnemy)
             return;
         if (@event is InputEventMouseButton mouse && mouse.Pressed && mouse.ButtonIndex == MouseButton.Left)
             TryMoveToward(mouse.Position);
@@ -171,6 +180,16 @@ public partial class Level01 : Control
         _turnActive = false;
         _turns.EndTurn();
         SetActive();
+    }
+
+    // Restore the active party member to the cell they started their turn in.
+    // Allowed once, before END TURN, so a move can be reconsidered.
+    private void OnUndoPressed()
+    {
+        if (!_turnActive || _turns.Current.IsEnemy || !_movedThisTurn)
+            return;
+        MoveTokenTo(_turns.CurrentIndex, _turnStartCell);
+        _movedThisTurn = false;
     }
 
     private void OnBackPressed()
@@ -204,6 +223,12 @@ public partial class Level01 : Control
 
     /// <summary>Whether the active combatant can move to cell (x, y).</summary>
     public bool IsReachable(int x, int y) => _reachable.ContainsKey(new Vector2I(x, y));
+
+    /// <summary>Whether the active party member has already moved this turn.</summary>
+    public bool HasMovedThisTurn() => _movedThisTurn;
+
+    /// <summary>Test hook: restore the active party member to their turn-start cell.</summary>
+    public void UndoMove() => OnUndoPressed();
 
     /// <summary>Test hook: make the named combatant active without re-rolling.</summary>
     public void ForceCurrent(string name)
@@ -244,6 +269,9 @@ public partial class Level01 : Control
     {
         int index = _turns.CurrentIndex;
         _turnActive = true;
+        _movedThisTurn = false;
+        _enemyActed = false;
+        _turnStartCell = CurrentCell();
         _turnLabel.Text = $"ROUND {_turns.Round} — TURN: {_turns.Current.Name}";
         _infoLabel.Text = BuildInitiativeInfo();
         for (int i = 0; i < _tokenBodies.Count; i++)
@@ -302,7 +330,7 @@ public partial class Level01 : Control
     {
         if (!_reachable.ContainsKey(next))
             return;
-        MoveTokenTo(_turns.CurrentIndex, next);
+        MovePartyTo(next);
     }
 
     private void TryMoveToward(Vector2 localPos)
@@ -319,9 +347,29 @@ public partial class Level01 : Control
         RefreshHighlights();
     }
 
-    // Enemy auto-move: step one tile in a random free direction.
+    // Player move: one move per turn; the turn-start cell is remembered so
+    // UNDO can restore it before END TURN. The reachable set is NOT recomputed
+    // here — it stays frozen to the turn-start position so the full range
+    // (and highlights) remain valid for the rest of the turn.
+    private void MovePartyTo(Vector2I next)
+    {
+        if (_movedThisTurn)
+            return;
+        _tokens[_turns.CurrentIndex].Position = new Vector2(next.X * TileSize, next.Y * TileSize);
+        _movedThisTurn = true;
+    }
+
+    /// <summary>Test hook: act for the active enemy now (move + end turn).</summary>
+    public void ForceEnemyMove() => DoEnemyMove();
+
+    // Enemy auto-move: step one tile in a random free direction, then end
+    // the enemy's turn (enemies have no other actions yet). Guarded so it
+    // fires exactly once per turn.
     private void DoEnemyMove()
     {
+        if (_enemyActed)
+            return;
+        _enemyActed = true;
         int index = _turns.CurrentIndex;
         var from = CurrentCell();
         var options = new List<Vector2I>();
@@ -336,6 +384,9 @@ public partial class Level01 : Control
         }
         if (options.Count > 0)
             MoveTokenTo(index, options[_rng.Next(options.Count)]);
+        // Enemy has acted: advance to the next combatant.
+        _turns.EndTurn();
+        SetActive();
     }
 
     private Vector2I CurrentCell()
