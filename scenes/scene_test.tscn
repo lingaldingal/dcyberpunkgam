@@ -135,6 +135,13 @@ custom_minimum_size = Vector2(0, 90)
 theme_override_font_sizes/normal_font_size = 22
 scroll_active = true
 
+[node name="Hint" type="Label" parent="DialogueBox"]
+layout_mode = 2
+size_flags_horizontal = 1
+theme_override_colors/font_color = Color(0.55, 0.6, 0.7, 0.8)
+theme_override_font_sizes/font_size = 15
+text = "Click / Space / Enter to continue"
+
 [node name="Back" type="Button" parent="."]
 layout_mode = 1
 anchors_preset = 1
