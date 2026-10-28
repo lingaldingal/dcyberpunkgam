@@ -28,10 +28,20 @@ SCENE TEST button:
   highlighted in the text via BBCode (`[b][color=#...]Speaker[/color][/b]: ...`).
 - The active speaker's portrait stays at full brightness with a pulsing glow;
   the inactive one dims to alpha 0.35 and its glow hides. Lines alternate
-  Vex/Kaito and loop. `BACK TO MENU` returns via `GameManager.QuitToMenu()`.
+  Vex/Kaito.
+- **Manual advance**: lines do NOT auto-advance. A left click anywhere
+  (`_GuiInput`) or Space/Enter (`_UnhandledInput`, `ui_accept`/`ui_select`)
+  calls `Advance()`: first finishes revealing the current line, then moves to
+  the next. Answering the LAST line ends the scene → `GameManager.QuitToMenu()`.
+  The root Control uses `MouseFilter.Stop` to receive clicks (the BACK button
+  is top-right and doesn't overlap dialogue clicks). A `Hint` label under the
+  text says "Click / Space / Enter to continue". `BACK TO MENU` still works
+  via `GameManager.QuitToMenu()`.
 - Test hooks: `GetLineIndex()`, `GetSpeakerName()`, `GetLineText()`,
   `GetLineCount()`, `GetTextPlain()` (logical text, BBCode-free), `SkipReveal()`,
-  `SetLine(int)`. `cutscene_test.gd` uses these (headless, so no render pass).
+  `SetLine(int)`, `Advance()`. `cutscene_test.gd` uses these (headless, so no
+  render pass) and simulates a click with `Input.parse_input_event` (separate
+  press/release events, position on empty area to avoid buttons).
 
 ## Turn system (initiative) — 8 combatants
 `TurnSystem` (C#, plain class — not a Godot node) drives turn order in Level01:

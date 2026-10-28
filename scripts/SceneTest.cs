@@ -8,11 +8,12 @@ namespace Dcyberpunkgam;
 /// conversation about cheese. Text reveals character by character and
 /// the box auto-scrolls; the speaker is highlighted in the text (bold,
 /// in their color) and their portrait glows while the other dims.
+/// Click, Space, or Enter advances the conversation; when the last line
+/// is answered the scene returns to the main menu.
 /// </summary>
 public partial class SceneTest : Control
 {
     private const float RevealCps = 45f;   // characters per second
-    private const float LineHold = 1.4f;   // pause after a line is done
 
     private struct Line
     {
@@ -33,7 +34,7 @@ public partial class SceneTest : Control
 
     private int _lineIndex;
     private int _charsShown;
-    private float _holdTimer;
+    private bool _ended;
 
     private Control _left = null!;
     private Control _right = null!;
@@ -41,44 +42,84 @@ public partial class SceneTest : Control
     private ColorRect _rightGlow = null!;
     private RichTextLabel _text = null!;
     private Button _backButton = null!;
+    private Label _hint = null!;
 
     public override void _Ready()
     {
-        MouseFilter = MouseFilterEnum.Ignore;
+        MouseFilter = MouseFilterEnum.Stop;
         _left = GetNode<Control>("LeftCharacter");
         _right = GetNode<Control>("RightCharacter");
         _leftGlow = GetNode<ColorRect>("LeftCharacter/Glow");
         _rightGlow = GetNode<ColorRect>("RightCharacter/Glow");
         _text = GetNode<RichTextLabel>("DialogueBox/Text");
         _backButton = GetNode<Button>("Back");
+        _hint = GetNode<Label>("DialogueBox/Hint");
         _backButton.Pressed += OnBackPressed;
         ShowLine();
     }
 
     public override void _Process(double delta)
     {
+        if (!_ended)
+        {
+            var line = Dialogue[_lineIndex];
+            if (_charsShown < line.Text.Length)
+            {
+                _charsShown = (int)Mathf.Min(line.Text.Length, _charsShown + (float)delta * RevealCps);
+                _text.Text = SpeakerBbCode(line) + line.Text[.._charsShown];
+                _text.ScrollToLine(_text.GetLineCount() - 1);
+            }
+
+            // Active speaker: glow pulses, portrait full; inactive dims out.
+            // Even lines are Vex (left), odd lines are Kaito (right).
+            var leftSpeaks = _lineIndex % 2 == 0;
+            SetSpeakerHighlight(_left, _leftGlow, leftSpeaks);
+            SetSpeakerHighlight(_right, _rightGlow, !leftSpeaks);
+        }
+    }
+
+    public override void _GuiInput(InputEvent e)
+    {
+        if (e is InputEventMouseButton mb && mb.Pressed && mb.ButtonIndex == MouseButton.Left)
+            Advance();
+    }
+
+    public override void _UnhandledInput(InputEvent e)
+    {
+        if (e.IsActionPressed("ui_accept") || e.IsActionPressed("ui_select")) // Enter or Space
+            Advance();
+    }
+
+    /// <summary>
+    /// Advance the conversation: a click/key first finishes revealing the
+    /// current line, then moves to the next line. Answering the last line
+    /// ends the scene and returns to the main menu.
+    /// </summary>
+    public void Advance()
+    {
+        if (_ended)
+            return;
         var line = Dialogue[_lineIndex];
         if (_charsShown < line.Text.Length)
         {
-            _charsShown = (int)Mathf.Min(line.Text.Length, _charsShown + (float)delta * RevealCps);
-            _text.Text = SpeakerBbCode(line) + line.Text[.._charsShown];
+            _charsShown = line.Text.Length;
+            _text.Text = SpeakerBbCode(line) + line.Text;
             _text.ScrollToLine(_text.GetLineCount() - 1);
         }
-        else
+        else if (_lineIndex < Dialogue.Length - 1)
         {
-            if (++_holdTimer >= LineHold)
-            {
-                _lineIndex = (_lineIndex + 1) % Dialogue.Length;
-                _holdTimer = 0;
-                ShowLine();
-            }
+            _lineIndex++;
+            ShowLine();
         }
+        else
+            EndScene();
+    }
 
-        // Active speaker: glow pulses, portrait full; inactive dims out.
-        // Even lines are Vex (left), odd lines are Kaito (right).
-        var leftSpeaks = _lineIndex % 2 == 0;
-        SetSpeakerHighlight(_left, _leftGlow, leftSpeaks);
-        SetSpeakerHighlight(_right, _rightGlow, !leftSpeaks);
+    private void EndScene()
+    {
+        _ended = true;
+        _hint.Visible = false;
+        GameManager.Instance.QuitToMenu();
     }
 
     private static void SetSpeakerHighlight(Control portrait, ColorRect glow, bool active)
@@ -96,7 +137,6 @@ public partial class SceneTest : Control
     {
         var line = Dialogue[_lineIndex];
         _charsShown = 0;
-        _holdTimer = 0;
         _text.Text = SpeakerBbCode(line);
         _text.ScrollToLine(0);
     }

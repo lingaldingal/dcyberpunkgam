@@ -46,15 +46,13 @@ func _run_cutscene() -> void:
 	await process_frame
 	_check(scene.GetTextPlain() == "Vex: " + full_line, "SkipReveal shows the full line")
 
-	# Finish the reveal; the completed line holds, then advances to Kaito.
-	scene.SkipReveal()
-	var advanced := false
-	for i in 300:
+	# The line holds (no auto-advance); an explicit Advance() moves on.
+	for i in 30:
 		await process_frame
-		if scene.GetLineIndex() != 0:
-			advanced = true
-			break
-	_check(advanced, "line advances after the reveal completes")
+	_check(scene.GetLineIndex() == 0, "line holds until advanced (auto-advance removed)")
+	scene.Advance()
+	await process_frame
+	_check(scene.GetLineIndex() == 1, "Advance() advances to the next line (got %d)" % scene.GetLineIndex())
 	_check(scene.GetSpeakerName() == "Kaito", "next line is spoken by Kaito (got '%s')" % scene.GetSpeakerName())
 	_check(scene.GetTextPlain().begins_with("Kaito:"), "Kaito's line text is showing")
 
@@ -76,8 +74,43 @@ func _run_cutscene() -> void:
 	_check(speakers == ["Vex", "Kaito", "Vex", "Kaito", "Vex", "Kaito"],
 			"speakers alternate Vex/Kaito (got %s)" % str(speakers))
 
-	# BACK returns to the menu.
-	scene.get_node("Back").pressed.emit()
+	# --- Answering the last line ends the scene and returns to the menu. ---
+	scene.SetLine(5)
+	for i in 30:
+		await process_frame
+	scene.SkipReveal()
+	await process_frame
+	# Click an empty area (top, between the portraits) so no button swallows it.
+	var pos: Vector2 = Vector2(640, 30)
+	var down := InputEventMouseButton.new()
+	down.button_index = MOUSE_BUTTON_LEFT
+	down.pressed = true
+	down.position = pos
+	Input.parse_input_event(down)
+	var up := InputEventMouseButton.new()
+	up.button_index = MOUSE_BUTTON_LEFT
+	up.pressed = false
+	up.position = pos
+	Input.parse_input_event(up)
+	var ended := false
+	for i in 60:
+		await process_frame
+		if root.get_node_or_null("MainMenu") != null:
+			ended = true
+			break
+	_check(ended, "clicking on the last line ends the scene and returns to the menu")
+
+	# BACK returns to the menu from a fresh cutscene.
+	var menu2: Node = root.get_node("MainMenu")
+	menu2.get_node("Center/Panel/SceneTest").pressed.emit()
+	var scene2: Node = null
+	for i in 60:
+		await process_frame
+		scene2 = root.get_node_or_null("SceneTest")
+		if scene2 != null:
+			break
+	_check(scene2 != null, "cutscene reloaded for BACK check")
+	scene2.get_node("Back").pressed.emit()
 	await process_frame
 	_check(root.get_node_or_null("MainMenu") != null, "BACK returns to menu")
 
