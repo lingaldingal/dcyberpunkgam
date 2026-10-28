@@ -61,6 +61,11 @@ layout_mode = 2
 custom_minimum_size = Vector2(240, 48)
 text = "SCENE TEST"
 
+[node name="Resolution" type="Button" parent="Center/Panel"]
+layout_mode = 2
+custom_minimum_size = Vector2(240, 48)
+text = "RESOLUTION: 1280x720"
+
 [node name="Quit" type="Button" parent="Center/Panel"]
 layout_mode = 2
 custom_minimum_size = Vector2(240, 48)
