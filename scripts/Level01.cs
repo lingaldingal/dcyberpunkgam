@@ -1,55 +1,84 @@
+using System.Collections.Generic;
 using Godot;
 
 namespace Dcyberpunkgam;
 
 /// <summary>
-/// Level 01: placeholder top-down arena. A party of four fights in
-/// rounds; at the start of the encounter every character rolls a d5
-/// for initiative and the roll is added to their Agility to set turn
-/// order (descending), which persists for the rest of the encounter.
-/// The active character can be moved (WASD/arrows or clicking a
-/// highlighted tile), then END TURN passes control to the next
-/// character. When everyone has acted, a new round begins with the
-/// same order.
+/// Level 01: top-down turn-based arena. A party of four fights four enemies in
+/// rounds. At the start of the encounter every combatant rolls a d5 for
+/// initiative; the roll is added to their Agility and everyone acts in
+/// descending order of that total (ties: higher Agility, then roster order).
+/// The order is rolled once and persists for the rest of the encounter.
+///
+/// Movement: the active combatant may move up to <see cref="Character.MovementRange"/>
+/// tiles (5 + Agility/2, floored). Clicking any reachable tile moves the
+/// combatant there along the shortest path that avoids obstacles and other
+/// tokens (BFS); WASD nudges one tile. Enemies auto-move one tile in a random
+/// direction on their turn.
 /// </summary>
 public partial class Level01 : Control
 {
-    private const int GridWidth = 12;
-    private const int GridHeight = 7;
-    private const int TileSize = 64;
+    private const int GridWidth = 20;
+    private const int GridHeight = 12;
+    private const int TileSize = 48;
 
-    // 1 = walkable, 0 = obstacle (placeholder layout).
+    // Frames an enemy waits before acting, so its move is visible.
+    private const int EnemyThinkFrames = 12;
+
+    private static readonly Vector2I[] Dirs =
+    {
+        new(1, 0), new(-1, 0), new(0, 1), new(0, -1),
+    };
+
+    // 1 = walkable, 0 = obstacle (placeholder layout, 12 rows x 20 cols).
     private static readonly int[,] Walkable =
     {
-        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
-        { 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 1, 1 },
-        { 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 1, 1 },
-        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
-        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
-        { 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1 },
-        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
     };
 
-    // Placeholder party. Agility: 10 = normal, 20 = max.
-    private static readonly Character[] Party =
+    // Roster: party (0-3) then enemies (4-7). Token index == roster index.
+    private static readonly Character[] Roster =
     {
-        new("Vex", new Color(0.85f, 0.25f, 0.35f), 12),
-        new("Kaito", new Color(0.25f, 0.75f, 0.9f), 10),
-        new("Rook", new Color(0.4f, 0.85f, 0.45f), 15),
-        new("Mira", new Color(0.95f, 0.75f, 0.25f), 10),
+        new("Vex", new Color(0.85f, 0.25f, 0.35f), 12, false),
+        new("Kaito", new Color(0.25f, 0.75f, 0.9f), 10, false),
+        new("Rook", new Color(0.4f, 0.85f, 0.45f), 15, false),
+        new("Mira", new Color(0.95f, 0.75f, 0.25f), 10, false),
+        new("Gutter", new Color(0.6f, 0.3f, 0.8f), 11, true),
+        new("Slick", new Color(0.9f, 0.4f, 0.7f), 13, true),
+        new("Brute", new Color(0.5f, 0.2f, 0.2f), 16, true),
+        new("Wisp", new Color(0.7f, 0.7f, 0.9f), 9, true),
     };
 
+    // Starting cells, one per roster entry.
     private static readonly (int X, int Y)[] StartCells =
     {
-        (1, 1), (2, 1), (1, 2), (2, 2),
+        (1, 1), (2, 1), (1, 2), (2, 2),          // party (left)
+        (17, 1), (18, 1), (17, 2), (18, 2),      // enemies (right)
     };
 
     private readonly List<Control> _tokens = new();
     private readonly List<ColorRect> _tokenBodies = new();
     private readonly List<ColorRect> _highlights = new();
+    private readonly System.Random _rng = new();
 
     private TurnSystem _turns = null!;
     private bool _turnActive;
+    private Dictionary<Vector2I, int> _reachable = new();
+
+    // Enemy auto-move: armed when an enemy is active; fires after a short delay.
+    private bool _enemyMoveArmed;
+    private int _enemyMoveFrames;
 
     private Control _board = null!;
     private Label _turnLabel = null!;
@@ -81,9 +110,24 @@ public partial class Level01 : Control
         _endTurnButton.Pressed += OnEndTurnPressed;
         _backButton.Pressed += OnBackPressed;
 
-        _turns = new TurnSystem(Party.ToList());
+        _turns = new TurnSystem(Roster.ToList());
         _turns.StartEncounter();
         SetActive();
+    }
+
+    public override void _Process(double delta)
+    {
+        // Delayed enemy action: count down frames, then move — but only while
+        // the armed combatant is still current (a turn change re-arms).
+        if (_enemyMoveArmed && _turnActive && _turns.Current.IsEnemy)
+        {
+            _enemyMoveFrames--;
+            if (_enemyMoveFrames <= 0)
+            {
+                _enemyMoveArmed = false;
+                DoEnemyMove();
+            }
+        }
     }
 
     // Movement keys are handled in _Input (runs before focus handling)
@@ -108,7 +152,7 @@ public partial class Level01 : Control
         else
             return;
 
-        TryMove(dx, dy);
+        MoveTo(CurrentCell() + new Vector2I(dx, dy));
         GetViewport().SetInputAsHandled();
     }
 
@@ -134,10 +178,15 @@ public partial class Level01 : Control
         GetNode<GameManager>("/root/GameManager").QuitToMenu();
     }
 
-    // Test/debug hooks: read turn state and force deterministic d5 rolls.
+    // --- Test/debug hooks -------------------------------------------------
+
     public int GetRound() => _turns.Round;
     public string GetCurrentName() => _turns.Current.Name;
-    public void SetInitiativeRolls(int[] rolls) => _turns.SetRolls(rolls);
+    public void SetInitiativeRolls(int[] rolls)
+    {
+        _turns.SetRolls(rolls);
+        SetActive();
+    }
     public int[] GetInitiativeTotals() => (int[])_turns.Total.Clone();
 
     /// <summary>Character names in this round's turn order (first = next to act).</summary>
@@ -150,6 +199,47 @@ public partial class Level01 : Control
         return names;
     }
 
+    /// <summary>How many tiles the active combatant may move (5 + Agility/2).</summary>
+    public int GetMovementRange() => _turns.Current.MovementRange;
+
+    /// <summary>Whether the active combatant can move to cell (x, y).</summary>
+    public bool IsReachable(int x, int y) => _reachable.ContainsKey(new Vector2I(x, y));
+
+    /// <summary>Test hook: make the named combatant active without re-rolling.</summary>
+    public void ForceCurrent(string name)
+    {
+        int index = -1;
+        for (int i = 0; i < Roster.Length; i++)
+        {
+            if (Roster[i].Name == name)
+            {
+                index = i;
+                break;
+            }
+        }
+        if (index < 0)
+            return;
+        _turns.ForceCurrent(index);
+        SetActive();
+    }
+
+    /// <summary>Test hook: the board cell a token currently occupies.</summary>
+    public Vector2I GetTokenCell(string name)
+    {
+        int index = -1;
+        for (int i = 0; i < Roster.Length; i++)
+        {
+            if (Roster[i].Name == name)
+            {
+                index = i;
+                break;
+            }
+        }
+        return index < 0 ? default : (Vector2I)(_tokens[index].Position / TileSize);
+    }
+
+    // --- Turn / movement --------------------------------------------------
+
     private void SetActive()
     {
         int index = _turns.CurrentIndex;
@@ -158,52 +248,94 @@ public partial class Level01 : Control
         _infoLabel.Text = BuildInitiativeInfo();
         for (int i = 0; i < _tokenBodies.Count; i++)
             _tokenBodies[i].Modulate = i == index ? Colors.White : new Color(1, 1, 1, 0.55f);
+        _reachable = ComputeDistances(CurrentCell(), _turns.Current.MovementRange, index);
         RefreshHighlights();
+
+        _enemyMoveArmed = _turns.Current.IsEnemy;
+        _enemyMoveFrames = EnemyThinkFrames;
     }
 
     private string BuildInitiativeInfo()
     {
         var parts = new List<string>(_turns.Combatants.Count);
         for (int i = 0; i < _turns.Combatants.Count; i++)
-            parts.Add($"{_turns.Combatants[i].Name} {_turns.Combatants[i].Agility}+{_turns.Roll[i]}");
-        return string.Join(" · ", parts)
-            + "  —  d5 initiative + Agility sets order (high first) · WASD / click to move · END TURN";
-    }
-
-    private void TryMove(int dx, int dy)
-    {
-        MoveTo(CurrentCell() + new Vector2I(dx, dy));
-    }
-
-    private void TryMoveToward(Vector2 localPos)
-    {
-        var from = CurrentCell();
-        for (int x = 0; x < GridWidth; x++)
         {
-            for (int y = 0; y < GridHeight; y++)
+            var c = _turns.Combatants[i];
+            parts.Add($"{c.Name} {c.Agility}+{_turns.Roll[i]}{(c.IsEnemy ? " (E)" : "")}");
+        }
+        return string.Join(" · ", parts)
+            + "  —  initiative d5 + Agility sets order (high first) · move = 5 + Agi/2 · WASD / click to move · END TURN";
+    }
+
+    // BFS: shortest-path distance from <start> to every reachable tile, treating
+    // obstacles and every token except the moving one as walls.
+    private Dictionary<Vector2I, int> ComputeDistances(Vector2I start, int range, int movingIndex)
+    {
+        var dist = new Dictionary<Vector2I, int> { [start] = 0 };
+        var queue = new Queue<Vector2I>();
+        queue.Enqueue(start);
+        while (queue.Count > 0)
+        {
+            var cur = queue.Dequeue();
+            int d = dist[cur];
+            if (d >= range)
+                continue;
+            foreach (var dir in Dirs)
             {
-                var center = new Vector2(x * TileSize + TileSize / 2f, y * TileSize + TileSize / 2f);
-                if (Math.Abs(center.X - localPos.X) >= TileSize / 2f)
+                var next = cur + dir;
+                if (next.X < 0 || next.X >= GridWidth || next.Y < 0 || next.Y >= GridHeight)
                     continue;
-                if (Math.Abs(center.Y - localPos.Y) >= TileSize / 2f)
+                if (Walkable[next.Y, next.X] != 1)
                     continue;
-                if (Math.Abs(x - from.X) + Math.Abs(y - from.Y) != 1)
+                if (IsOccupiedBy(next, movingIndex))
                     continue;
-                MoveTo(new Vector2I(x, y));
+                if (dist.ContainsKey(next))
+                    continue;
+                dist[next] = d + 1;
+                queue.Enqueue(next);
             }
         }
+        return dist;
     }
 
     private void MoveTo(Vector2I next)
     {
-        if (next.X < 0 || next.X >= GridWidth || next.Y < 0 || next.Y >= GridHeight)
+        if (!_reachable.ContainsKey(next))
             return;
-        if (Walkable[next.Y, next.X] != 1)
-            return;
-        if (IsOccupied(next))
-            return;
-        _tokens[_turns.CurrentIndex].Position = new Vector2(next.X * TileSize, next.Y * TileSize);
+        MoveTokenTo(_turns.CurrentIndex, next);
+    }
+
+    private void TryMoveToward(Vector2 localPos)
+    {
+        int x = (int)(localPos.X / TileSize);
+        int y = (int)(localPos.Y / TileSize);
+        MoveTo(new Vector2I(x, y));
+    }
+
+    private void MoveTokenTo(int index, Vector2I cell)
+    {
+        _tokens[index].Position = new Vector2(cell.X * TileSize, cell.Y * TileSize);
+        _reachable = ComputeDistances(cell, _turns.Combatants[index].MovementRange, index);
         RefreshHighlights();
+    }
+
+    // Enemy auto-move: step one tile in a random free direction.
+    private void DoEnemyMove()
+    {
+        int index = _turns.CurrentIndex;
+        var from = CurrentCell();
+        var options = new List<Vector2I>();
+        foreach (var dir in Dirs)
+        {
+            var next = from + dir;
+            if (next.X < 0 || next.X >= GridWidth || next.Y < 0 || next.Y >= GridHeight)
+                continue;
+            if (Walkable[next.Y, next.X] != 1 || IsOccupiedBy(next, index))
+                continue;
+            options.Add(next);
+        }
+        if (options.Count > 0)
+            MoveTokenTo(index, options[_rng.Next(options.Count)]);
     }
 
     private Vector2I CurrentCell()
@@ -211,12 +343,11 @@ public partial class Level01 : Control
         return (Vector2I)(_tokens[_turns.CurrentIndex].Position / TileSize);
     }
 
-    private bool IsOccupied(Vector2I cell)
+    private bool IsOccupiedBy(Vector2I cell, int ignoreIndex)
     {
-        int current = _turns.CurrentIndex;
         for (int i = 0; i < _tokens.Count; i++)
         {
-            if (i == current)
+            if (i == ignoreIndex)
                 continue;
             if ((Vector2I)(_tokens[i].Position / TileSize) == cell)
                 return true;
@@ -230,19 +361,13 @@ public partial class Level01 : Control
             rect.QueueFree();
         _highlights.Clear();
 
-        var from = CurrentCell();
-        foreach (var (dx, dy) in new[] { (1, 0), (-1, 0), (0, 1), (0, -1) })
+        foreach (var cell in _reachable.Keys)
         {
-            var next = from + new Vector2I(dx, dy);
-            if (next.X < 0 || next.X >= GridWidth || next.Y < 0 || next.Y >= GridHeight)
-                continue;
-            if (Walkable[next.Y, next.X] != 1 || IsOccupied(next))
-                continue;
             var highlight = new ColorRect
             {
-                Position = new Vector2(next.X * TileSize, next.Y * TileSize),
+                Position = new Vector2(cell.X * TileSize, cell.Y * TileSize),
                 Size = new Vector2(TileSize, TileSize),
-                Color = new Color(1, 1, 1, 0.2f),
+                Color = new Color(0.3f, 0.9f, 0.6f, 0.18f),
                 MouseFilter = MouseFilterEnum.Ignore,
             };
             _board.AddChild(highlight);
@@ -268,13 +393,15 @@ public partial class Level01 : Control
             }
         }
 
-        for (int i = 0; i < Party.Length; i++)
+        for (int i = 0; i < Roster.Length; i++)
         {
-            var (name, color) = (Party[i].Name, Party[i].Color);
+            var (name, color) = (Roster[i].Name, Roster[i].Color);
             var (sx, sy) = StartCells[i];
+            // Party tokens are P0.., enemy tokens E0.. (test hooks key off this).
+            var tokenName = Roster[i].IsEnemy ? $"E{i - 4}" : $"P{i}";
             var token = new Control
             {
-                Name = $"P{i}",
+                Name = tokenName,
                 Position = new Vector2(sx * TileSize, sy * TileSize),
                 Size = new Vector2(TileSize, TileSize),
                 ZIndex = 1,
