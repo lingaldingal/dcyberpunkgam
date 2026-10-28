@@ -13,14 +13,21 @@ namespace Dcyberpunkgam;
 /// Movement: the active combatant may move up to <see cref="Character.MovementRange"/>
 /// tiles (5 + Agility/2, floored). Clicking any reachable tile moves the
 /// combatant there along the shortest path that avoids obstacles and other
-/// tokens (BFS); WASD nudges one tile. Enemies auto-move one tile in a random
-/// direction on their turn.
+/// tokens (BFS). Character movement is mouse-only; WASD instead pans the
+/// camera. Enemies auto-move one tile in a random direction on their turn.
+///
+/// Camera: the board is a plain Control that can be far larger than the window
+/// (levels are up to 2000x2000 grids). <see cref="_cameraPos"/> is the top-left
+/// pixel of the viewport, clamped to the board; WASD pans it by one tile per
+/// frame while held.
 /// </summary>
 public partial class Level01 : Control
 {
     private const int GridWidth = 20;
     private const int GridHeight = 12;
     private const int TileSize = 48;
+    // One board tile per frame of WASD panning.
+    private const int CameraPanSpeed = TileSize;
 
     // Frames an enemy waits before acting, so its move is visible.
     private const int EnemyThinkFrames = 12;
@@ -86,6 +93,11 @@ public partial class Level01 : Control
     // Set once the active enemy has moved, so the turn ends exactly once.
     private bool _enemyActed;
 
+    // Top-left pixel of the viewport within the board (see camera section).
+    private Vector2 _cameraPos;
+    // Test hook: when non-None, UpdateCamera pans as if this key were held.
+    private Key _forcedPanKey;
+
     private Control _board = null!;
     private Label _turnLabel = null!;
     private Label _infoLabel = null!;
@@ -109,6 +121,7 @@ public partial class Level01 : Control
         })
             GetNode<Control>(name).MouseFilter = MouseFilterEnum.Ignore;
         BuildBoard();
+        InitializeCamera();
 
         _turnLabel = GetNode<Label>("Center/Panel/HUD/Turn");
         _infoLabel = GetNode<Label>("Center/Panel/HUD/Info");
@@ -137,32 +150,104 @@ public partial class Level01 : Control
                 DoEnemyMove();
             }
         }
+
+        UpdateCamera((float)delta);
     }
 
-    // Movement keys are handled in _Input (runs before focus handling)
-    // so they work even while a button holds keyboard focus.
-    public override void _Input(InputEvent @event)
+    // WASD pans the camera (held keys, so it works while a button has focus).
+    // Character movement is mouse-only, so WASD no longer moves any token.
+    private void UpdateCamera(float delta)
     {
-        if (!_turnActive || _turns.Current.IsEnemy)
-            return;
-        if (@event is not InputEventKey key || !key.Pressed || key.Echo)
+        if (_board == null)
             return;
 
-        int dx = 0;
-        int dy = 0;
-        if (key.Keycode == Key.W || key.Keycode == Key.Up)
-            dy = -1;
-        else if (key.Keycode == Key.S || key.Keycode == Key.Down)
-            dy = 1;
-        else if (key.Keycode == Key.A || key.Keycode == Key.Left)
-            dx = -1;
-        else if (key.Keycode == Key.D || key.Keycode == Key.Right)
-            dx = 1;
-        else
+        float step = CameraPanSpeed * delta;
+        int dirX = 0;
+        int dirY = 0;
+        // A forced pan key (test hook) takes precedence over real key state.
+        bool forced = false;
+        if (_forcedPanKey != Key.None)
+        {
+            forced = true;
+            if (_forcedPanKey == Key.W || _forcedPanKey == Key.Up)
+                dirY -= 1;
+            else if (_forcedPanKey == Key.S || _forcedPanKey == Key.Down)
+                dirY += 1;
+            else if (_forcedPanKey == Key.A || _forcedPanKey == Key.Left)
+                dirX -= 1;
+            else if (_forcedPanKey == Key.D || _forcedPanKey == Key.Right)
+                dirX += 1;
+        }
+        if (!forced)
+        {
+            if (Godot.Input.IsKeyPressed(Key.W) || Godot.Input.IsKeyPressed(Key.Up))
+                dirY -= 1;
+            else if (Godot.Input.IsKeyPressed(Key.S) || Godot.Input.IsKeyPressed(Key.Down))
+                dirY += 1;
+            else if (Godot.Input.IsKeyPressed(Key.A) || Godot.Input.IsKeyPressed(Key.Left))
+                dirX -= 1;
+            else if (Godot.Input.IsKeyPressed(Key.D) || Godot.Input.IsKeyPressed(Key.Right))
+                dirX += 1;
+        }
+
+        if (dirX == 0 && dirY == 0)
+        {
+            ApplyCamera();
+            return;
+        }
+
+        // Panning "right"/"down" reveals the board's right/bottom edge, i.e.
+        // the viewport's top-left pixel moves in that direction.
+        _cameraPos = new Vector2(
+            _cameraPos.X + dirX * step,
+            _cameraPos.Y + dirY * step);
+        ApplyCamera();
+    }
+
+    // The board's pixel extent. Equals Grid*TileSize for the level's own grid,
+    // but is configurable (see SetBoardPixelSize) so the panning/clamping logic
+    // can be exercised against a large board (e.g. a 2000x2000 level).
+    private float _boardPixelW;
+    private float _boardPixelH;
+
+    // Clamp the camera to the board and apply it. The board is a plain
+    // Control, so it is shown by offsetting it by -camera (the board's own
+    // children keep their board-local coordinates; only the board moves).
+    // The camera is the board pixel at the viewport's top-left, so it is
+    // always >= 0 and, when the board is larger than the viewport in a
+    // dimension, at most (board - view) in that dimension.
+    private void ApplyCamera()
+    {
+        if (_board == null)
             return;
 
-        MoveTo(CurrentCell() + new Vector2I(dx, dy));
-        GetViewport().SetInputAsHandled();
+        float viewW = Size.X > 0 ? Size.X : 1;
+        float viewH = Size.Y > 0 ? Size.Y : 1;
+
+        float maxX = Mathf.Max(0f, _boardPixelW - viewW);
+        float maxY = Mathf.Max(0f, _boardPixelH - viewH);
+        _cameraPos = new Vector2(
+            Mathf.Clamp(_cameraPos.X, 0f, maxX),
+            Mathf.Clamp(_cameraPos.Y, 0f, maxY));
+
+        _board.Position = -_cameraPos;
+    }
+
+    private void InitializeCamera()
+    {
+        _boardPixelW = GridWidth * TileSize;
+        _boardPixelH = GridHeight * TileSize;
+        // Start pinned to the board's top-left corner.
+        _cameraPos = Vector2.Zero;
+        ApplyCamera();
+    }
+
+    /// <summary>Test hook: treat the board as <paramref name="pixels"/> wide/tall.</summary>
+    public void SetBoardPixelSize(float w, float h)
+    {
+        _boardPixelW = w;
+        _boardPixelH = h;
+        ApplyCamera();
     }
 
     private void OnBoardGuiInput(InputEvent @event)
@@ -263,6 +348,23 @@ public partial class Level01 : Control
         return index < 0 ? default : (Vector2I)(_tokens[index].Position / TileSize);
     }
 
+    /// <summary>Test hook: the board pixel the viewport's top-left is at.</summary>
+    public Vector2 GetCameraPos() => _cameraPos;
+
+    /// <summary>Test hook: pan the camera by a pixel offset (clamped).</summary>
+    public void PanCameraBy(Vector2 offset)
+    {
+        _cameraPos += offset;
+        ApplyCamera();
+    }
+
+    /// <summary>
+    /// Test hook: make <paramref name="key"/> behave as held for the next
+    /// <see cref="_Process"/> (Key.None clears it), so the WASD pan path can be
+    /// exercised without a real key event.
+    /// </summary>
+    public void SetPanKey(Key key) => _forcedPanKey = key;
+
     // --- Turn / movement --------------------------------------------------
 
     private void SetActive()
@@ -292,7 +394,7 @@ public partial class Level01 : Control
             parts.Add($"{c.Name} {c.Agility}+{_turns.Roll[i]}{(c.IsEnemy ? " (E)" : "")}");
         }
         return string.Join(" · ", parts)
-            + "  —  initiative d5 + Agility sets order (high first) · move = 5 + Agi/2 · WASD / click to move · END TURN";
+            + "  —  initiative d5 + Agility sets order (high first) · move = 5 + Agi/2 · click to move · WASD pans the map · END TURN";
     }
 
     // BFS: shortest-path distance from <start> to every reachable tile, treating

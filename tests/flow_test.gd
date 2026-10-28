@@ -172,34 +172,42 @@ func _run_flow() -> void:
 	# Obstacles are never reachable.
 	_check(not level.IsReachable(5, 1), "obstacle (5,1) not reachable")
 
-	# --- WASD movement nudges one tile within range. ---
+	# --- Camera panning: WASD pans the viewport over the board. ---
+	# Levels can be far larger than the window (up to 2000x2000 grids), so the
+	# camera clamps to the board's edges. Test the pan + clamp on a large board.
 	var p0 := level.get_node("Board/P0")
-	_check(not level.HasMovedThisTurn(), "Vex has not moved yet")
-	_press_key(KEY_A)
-	await process_frame
-	_check(p0.position == Vector2(0, TILE), "Vex moved left to (0,1)")
-	_check(level.HasMovedThisTurn(), "Vex has moved this turn")
-
-	# A party member moves only once per turn: second press is ignored.
-	_press_key(KEY_S)
-	await process_frame
-	_check(p0.position == Vector2(0, TILE), "second WASD move ignored (once per turn)")
-
-	# --- UNDO restores the turn-start cell and re-arms the move. ---
-	level.UndoMove()
-	await process_frame
-	_check(p0.position == Vector2(1 * TILE, 1 * TILE), "undo restored Vex to (1,1)")
-	_check(not level.HasMovedThisTurn(), "undo re-armed the move")
-	_press_key(KEY_A)
-	await process_frame
-	_check(p0.position == Vector2(0, TILE), "Vex moved left to (0,1) after undo")
-
-	# --- Click-to-move: click a reachable tile and Vex jumps there (BFS). ---
-	# Undo the WASD move so Vex can act again, then click a reachable tile.
-	level.UndoMove()
-	await process_frame
-	# Vex is at (1,1). Click (0,6): 6 tiles via left column, reachable.
 	var board := level.get_node("Board")
+	var viewport: Vector2 = level.size
+	level.SetBoardPixelSize(10000, 10000)
+	await process_frame
+	_check(level.GetCameraPos() == Vector2(0, 0), "camera starts at the board origin")
+	_check(board.position == Vector2(0, 0), "board offset is zero at the origin")
+	# Panning right/down moves the viewport into the board.
+	level.PanCameraBy(Vector2(500, 300))
+	_check(level.GetCameraPos() == Vector2(500, 300), "camera pans to (500,300)")
+	_check(board.position == Vector2(-500, -300), "board offset tracks the camera")
+	# Panning far past the bottom-right edge clamps to the board's edge.
+	level.PanCameraBy(Vector2(99999, 99999))
+	_check(level.GetCameraPos() == Vector2(10000 - viewport.x, 10000 - viewport.y),
+			"camera clamps to the board's bottom-right edge")
+	# Panning far past the top-left edge clamps back to the origin.
+	level.PanCameraBy(Vector2(-99999, -99999))
+	_check(level.GetCameraPos() == Vector2(0, 0), "camera clamps back to the origin")
+	_check(board.position == Vector2(0, 0), "board offset returns to zero")
+	# Holding a WASD key pans the camera (movement is mouse-only now, so WASD
+	# no longer moves any token). SetPanKey simulates holding D.
+	level.SetPanKey(KEY_D)
+	await process_frame
+	_check(level.GetCameraPos().x > 0, "holding D pans the camera right")
+	_check(p0.position == Vector2(1 * TILE, 1 * TILE),
+			"WASD no longer moves the token")
+	level.SetPanKey(KEY_NONE)
+	await process_frame
+	level.SetBoardPixelSize(20 * TILE, 12 * TILE)
+	await process_frame
+
+	# --- Click-to-move: mouse-only. Click a reachable tile, Vex jumps there. ---
+	# Vex is at (1,1). Click (0,6): 6 tiles via left column, reachable.
 	var click := InputEventMouseButton.new()
 	click.button_index = MOUSE_BUTTON_LEFT
 	click.pressed = true
@@ -207,6 +215,30 @@ func _run_flow() -> void:
 	board.gui_input.emit(click)
 	await process_frame
 	_check(p0.position == Vector2(0, 6 * TILE), "click moved Vex to (0,6)")
+	_check(level.HasMovedThisTurn(), "Vex has moved this turn")
+
+	# A second click is ignored (a party member moves once per turn).
+	var click_again := InputEventMouseButton.new()
+	click_again.button_index = MOUSE_BUTTON_LEFT
+	click_again.pressed = true
+	click_again.position = Vector2(0 * TILE + TILE / 2, 5 * TILE + TILE / 2)
+	board.gui_input.emit(click_again)
+	await process_frame
+	_check(p0.position == Vector2(0, 6 * TILE), "second click ignored (once per turn)")
+
+	# --- UNDO restores the turn-start cell and re-arms the move. ---
+	level.UndoMove()
+	await process_frame
+	_check(p0.position == Vector2(1 * TILE, 1 * TILE), "undo restored Vex to (1,1)")
+	_check(not level.HasMovedThisTurn(), "undo re-armed the move")
+	# Move again by click.
+	var click2 := InputEventMouseButton.new()
+	click2.button_index = MOUSE_BUTTON_LEFT
+	click2.pressed = true
+	click2.position = Vector2(0 * TILE + TILE / 2, 6 * TILE + TILE / 2)
+	board.gui_input.emit(click2)
+	await process_frame
+	_check(p0.position == Vector2(0, 6 * TILE), "Vex moved to (0,6) after undo")
 
 	# --- Enemy auto-move: on an enemy's turn it steps one random tile,
 	# then its turn ends automatically (no player input needed). ---

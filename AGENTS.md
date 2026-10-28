@@ -5,16 +5,18 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 ## Layout (menu + placeholder turn-based level + cutscene)
 - `GAMES.md` — game design outline (OUTDATED: references removed `CharacterData`; trust the code)
 - `project.godot` — main scene `res://scenes/main_menu.tscn`; `GameManager` C# autoload; `features` includes `C#`, `dotnet`
-- `scenes/main_menu.tscn` — title screen: NEW GAME / CONTINUE / SCENE TEST / QUIT
-- `scenes/level_01.tscn` — turn-based arena (20×12 grid board, 4 party + 4 enemy tokens, HUD, END TURN / BACK)
+- `scenes/main_menu.tscn` — title screen: NEW GAME / CONTINUE / SCENE TEST / RESOLUTION / QUIT
+- `scenes/level_01.tscn` — turn-based arena (20×12 grid board, 4 party + 4 enemy tokens, HUD, END TURN / UNDO / BACK)
 - `scenes/scene_test.tscn` — basic 2D cutscene (two placeholder characters L/R, scrolling cheese dialogue, speaker highlight)
 - `scripts/GameManager.cs` — autoload: scene flow (StartGame / StartSceneTest / QuitToMenu); exposes `Instance`
-- `scripts/MainMenu.cs`, `scripts/Level01.cs`, `scripts/SceneTest.cs`
+- `scripts/MainMenu.cs` — menu buttons incl. `OnResolutionPressed()` (cycles window size); `GetResolution()` test hook
+- `scripts/Level01.cs`, `scripts/SceneTest.cs`
 - `scripts/Character.cs` — combatant data (Name, Color, Agility, `IsEnemy`, `MovementRange` = 5 + Agility/2 floored)
 - `scripts/TurnSystem.cs` — round-based initiative turn order (see below)
 - `dcyberpunkgam.csproj` / `dcyberpunkgam.sln` — .NET project (Godot.NET.Sdk 4.7.2, net8.0)
-- `tests/flow_test.gd` — headless SceneTree functional test (menu → level → 8-combatant initiative → rounds → movement range → BFS reachability → WASD/click movement → once-per-turn + UNDO → enemy auto-move + auto turn-end → back). 36 checks.
+- `tests/flow_test.gd` — headless SceneTree functional test (menu → level → 8-combatant initiative → rounds → movement range → BFS reachability → **camera panning + clamping** → **mouse click-to-move** → once-per-turn + UNDO → enemy auto-move + auto turn-end → back). ~52 checks.
 - `tests/cutscene_test.gd` — headless functional test (menu → SCENE TEST → reveal, speaker alternation, highlight, back)
+- `tests/resolution_test.gd` — headless test: menu RESOLUTION button cycles 1280x720 → 1600x900 → 1920x1080 → back
 - `readme.me` — pre-existing file, untouched
 
 ## Cutscene (scene_test)
@@ -59,25 +61,49 @@ SCENE TEST button:
   combatant can reach that cell within range. (Replaced an earlier
   `GetReachableCells()` that returned `Vector2I[]` — the array didn't export
   cleanly to GDScript, so it's a `bool` now.)
-- **Party members move once per turn.** WASD nudges one tile; clicking a
-  reachable tile jumps there (BFS). The first move sets `_movedThisTurn`;
-  subsequent moves that turn are ignored. **UNDO** (button or `UndoMove()`)
-  restores the turn-start cell and re-arms the move — allowed once, before
-  END TURN. The reachable set is frozen to the turn-start position after a
-  move (not recomputed from the new position) so the full range stays valid
-  for the rest of the turn.
+- **Character movement is MOUSE-ONLY now.** Clicking a reachable tile jumps
+  there (BFS) via `OnBoardGuiInput` → `TryMoveToward`. The first move sets
+  `_movedThisTurn`; subsequent moves that turn are ignored. **UNDO** (button
+  or `UndoMove()`) restores the turn-start cell and re-arms the move — allowed
+  once, before END TURN. The reachable set is frozen to the turn-start
+  position after a move (not recomputed from the new position) so the full
+  range stays valid for the rest of the turn. (WASD no longer moves tokens —
+  it now pans the camera, see below. The old `_Input` handler was removed.)
+- **Camera panning (WASD).** Levels can be far larger than the window
+  (up to 2000×2000 grids), so the board is offset by `-camera` and **WASD /
+  arrow keys pan the viewport** one tile per frame (`UpdateCamera` in
+  `_Process`, `CameraPanSpeed` = one tile/frame). `_cameraPos` is the board
+  pixel at the viewport's top-left; `ApplyCamera()` clamps it to
+  `[0, board - view]` per axis (so a board smaller than the window stays
+  pinned to the origin) and sets `Board.Position = -camera`. The board's
+  children keep board-local coords; only the board node moves. The info
+  panel is constrained (800px + autowrap) so long text never overflows.
 - **Enemies auto-move** one tile in a random walkable direction after a short
   delay (12 frames) in `_Process`, then **automatically end their turn**
   (enemies have no other actions yet). Guarded by `_enemyActed` so the turn
-  ends exactly once. The player cannot control enemies: `_Input` and
-  `OnBoardGuiInput` both bail when `_turns.Current.IsEnemy`.
+  ends exactly once. `OnBoardGuiInput` bails when `_turns.Current.IsEnemy`.
 - Map is 20 cols × 12 rows; obstacles + token positions mean some short
   straight-line targets need a detour (e.g. Vex at (1,1) can't reach (1,11)
   directly because Rook at (1,2) blocks the column — the left column detour is
   12 steps, just over Vex's range 11).
 - Scene has a third action button: **UNDO** (between END TURN and BACK).
   Test hooks: `HasMovedThisTurn() -> bool`, `UndoMove()`, `ForceEnemyMove()`
-  (acts for the active enemy now: move + end turn).
+  (acts for the active enemy now: move + end turn), `GetCameraPos()`,
+  `PanCameraBy(Vector2)`, `SetBoardPixelSize(float w, float h)` (treats the
+  board as that pixel size — exercises pan/clamp on a large board),
+  `SetPanKey(Key)` (simulates a held WASD key for the next `_Process`,
+  `Key.None` clears — used to test panning headless where `Input.IsKeyPressed`
+  is never true).
+
+## Resolution selector (MainMenu)
+`MainMenu` has a **RESOLUTION** button that cycles the window through three
+supported sizes — **1280×720 → 1600×900 → 1920×1080 → back** — via
+`DisplayServer.WindowSetSize` (the project's default window is 1280×720, set in
+`project.godot`). The button label shows the current size. `GetResolution() ->
+Vector2I` is the test hook. NOTE: `DisplayServer.window_get_size()` returns
+(0,0) in `--headless`/`-s` test mode (window size isn't tracked headless), so
+`resolution_test.gd` asserts the menu's `GetResolution()` state rather than the
+window size.
 
 ## Build (C#)
 `dotnet` (SDK 8) is on PATH (`/usr/bin/dotnet`). Build before running:
