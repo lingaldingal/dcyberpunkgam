@@ -2,18 +2,35 @@
 
 Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated with Godot 4.7.2-stable Mono + .NET SDK 8.
 
-## Layout (menu + placeholder turn-based level)
+## Layout (menu + placeholder turn-based level + cutscene)
 - `GAMES.md` — game design outline (OUTDATED: references removed `CharacterData`; trust the code)
 - `project.godot` — main scene `res://scenes/main_menu.tscn`; `GameManager` C# autoload; `features` includes `C#`, `dotnet`
-- `scenes/main_menu.tscn` — title screen: NEW GAME / CONTINUE / QUIT
+- `scenes/main_menu.tscn` — title screen: NEW GAME / CONTINUE / SCENE TEST / QUIT
 - `scenes/level_01.tscn` — turn-based arena (20×12 grid board, 4 party + 4 enemy tokens, HUD, END TURN / BACK)
-- `scripts/GameManager.cs` — autoload: scene flow only (StartGame / QuitToMenu); exposes `Instance`
-- `scripts/MainMenu.cs`, `scripts/Level01.cs`
+- `scenes/scene_test.tscn` — basic 2D cutscene (two placeholder characters L/R, scrolling cheese dialogue, speaker highlight)
+- `scripts/GameManager.cs` — autoload: scene flow (StartGame / StartSceneTest / QuitToMenu); exposes `Instance`
+- `scripts/MainMenu.cs`, `scripts/Level01.cs`, `scripts/SceneTest.cs`
 - `scripts/Character.cs` — combatant data (Name, Color, Agility, `IsEnemy`, `MovementRange` = 5 + Agility/2 floored)
 - `scripts/TurnSystem.cs` — round-based initiative turn order (see below)
 - `dcyberpunkgam.csproj` / `dcyberpunkgam.sln` — .NET project (Godot.NET.Sdk 4.7.2, net8.0)
 - `tests/flow_test.gd` — headless SceneTree functional test (menu → level → 8-combatant initiative → rounds → movement range → BFS reachability → WASD/click movement → enemy auto-move → back)
+- `tests/cutscene_test.gd` — headless functional test (menu → SCENE TEST → reveal, speaker alternation, highlight, back)
 - `readme.me` — pre-existing file, untouched
+
+## Cutscene (scene_test)
+`SceneTest` (C#) is the basic 2D dialogue cutscene reached from the menu's
+SCENE TEST button:
+- Two placeholder characters (Vex left = red, Kaito right = cyan) as
+  ColorRect "portraits" (glow + frame + body + head + name label), no textures.
+- A bottom `PanelContainer` holds a `RichTextLabel` that reveals each line
+  character-by-character (`RevealCps`) and auto-scrolls; the speaker is
+  highlighted in the text via BBCode (`[b][color=#...]Speaker[/color][/b]: ...`).
+- The active speaker's portrait stays at full brightness with a pulsing glow;
+  the inactive one dims to alpha 0.35 and its glow hides. Lines alternate
+  Vex/Kaito and loop. `BACK TO MENU` returns via `GameManager.QuitToMenu()`.
+- Test hooks: `GetLineIndex()`, `GetSpeakerName()`, `GetLineText()`,
+  `GetLineCount()`, `GetTextPlain()` (logical text, BBCode-free), `SkipReveal()`,
+  `SetLine(int)`. `cutscene_test.gd` uses these (headless, so no render pass).
 
 ## Turn system (initiative) — 8 combatants
 `TurnSystem` (C#, plain class — not a Godot node) drives turn order in Level01:
@@ -108,3 +125,18 @@ never mix `anchors_preset` with explicit `anchor_*` values that disagree.
   Godot 4) also consumes in-window clicks, so `_UnhandledInput` is NOT a
   reliable click path; use `GuiInput` on the board.
 - `Walkable` is row-major `int[,]` indexed `[y, x]` (y = row, x = column).
+- **Headless `RichTextLabel` doesn't parse BBCode**: in `--headless` / `-s`
+  test mode there's no render pass, so `GetParsedText()` returns the RAW BBCode
+  (`[b][color=...]...`) instead of plain text. For tests, expose a logical
+  `GetTextPlain()` built from state rather than relying on `GetParsedText()`.
+- **Mono Godot binary (this container)**: the Mono build that loads `.cs`
+  scripts is `/home/bigal/Applications/GodotMono/Godot_v4.7.2-stable_mono_linux_x86_64/Godot_v4.7.2-stable_mono_linux.x86_64`.
+  The bare `godot` on PATH (`/usr/local/bin/godot`) is the GDScript build and
+  fails with "No loader found for resource ... .cs". `dotnet` is on PATH
+  (`/usr/bin/dotnet`), so plain `dotnet build dcyberpunkgam.csproj` works.
+  (The `/tmp/dotnet` + `/tmp/godot` paths above were from an earlier container.)
+- **Rendering verification without ImageMagick**: there's a real Xorg at
+  `DISPLAY=:0.0`. To screenshot a scene, run a tiny `SceneTree` script
+  (`godot --path . -s res://tests/_shot.gd`, NON-headless) that instantiates
+  the scene, `await process_frame` a few times, then
+  `root.get_texture().get_image().save_png(...)`. Analyze the PNG with PIL.
