@@ -2,8 +2,9 @@ namespace Dcyberpunkgam;
 
 /// <summary>
 /// A ranged weapon. The equipped weapon defines the combatant's shoot
-/// mechanic: targets must sit exactly <see cref="Range"/> squares away along
-/// one of the 8 straight lines, and a hit deals <see cref="Damage"/>.
+/// mechanic: targets within <see cref="Range"/> squares along one of the 8
+/// straight lines (with a clear line of sight) can be hit, and a hit deals
+/// <see cref="Damage"/>.
 /// </summary>
 public class Weapon
 {

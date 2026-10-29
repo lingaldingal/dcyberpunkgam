@@ -126,8 +126,13 @@ SCENE TEST button:
   buttons as disabled once their path is spent. Mode switching is free. UNDO
   re-arms both paths.
 - **Weapons** (`Weapon.cs`): the equipped weapon drives the shoot mechanic —
-  targets must sit **exactly `Weapon.Range`** squares away along one of the 8
-  straight lines (h/v/45° diagonal) and a hit deals `Weapon.Damage`.
+  any target **within `Weapon.Range`** squares (distance 1..range) along one of
+  the 8 straight lines (h/v/45° diagonal) with a clear line of sight can be
+  hit, and a hit deals `Weapon.Damage`. A shoot may be used **before or after
+  the move**; a shot always fires from the shooter's **CURRENT position** —
+  moving recomputes the shoot-target set from the new cell (`MovePartyTo` for
+  the player's click-to-move and `MoveTokenTo` for enemy/undo moves both call
+  `ComputeShootTargets()` + `RefreshHighlights()`).
   `Weapon.Pistol` (range 4, dmg 2) and `Weapon.Rifle` (range 6, dmg 3) are the
   two built-in weapons. `IsShootCell` / `ComputeShootTargets` / `TryShootAt`
   are all weapon-aware (range + damage come from the active combatant's
@@ -141,14 +146,16 @@ SCENE TEST button:
   `MaxHitPoints` and consumes the action. `Character.UseItem` /
   `GetItemCount`.
 - **Line of sight**: a shot is only valid if the cells between shooter and
-  target are walkable — `HasLineOfSight(from, to, range)` walks the `range-1`
-  intermediate cells on the line and also blocks a diagonal if a wall is at
-  either corner of any step (so you can't shoot through obstacles or around a
-  wall's corner). `ComputeShootTargets` only marks cells that pass both
-  `IsShootCell` (exactly `range` away on a straight line) AND `HasLineOfSight`.
+  target are walkable — `HasLineOfSight(from, to, range)` walks the `dist-1`
+  intermediate cells on the line (where `dist` is the actual 1..range
+  separation) and also blocks a diagonal if a wall is at either corner of any
+  step (so you can't shoot through obstacles or around a wall's corner;
+  `CornerBlocked` bounds-checks corners past the grid edge). `ComputeShootTargets`
+  walks each of the 8 lines from the CURRENT position and adds EVERY cell up to
+  `range` away with a clear line (a weapon hits at any distance 1..range).
 - **Enemy AI** (`DoEnemyMove()`), same rules as the player: each enemy turn it
   first tries to **shoot** — `ShootAtRange` fires at the first living party
-  member at weapon range on a clear line of sight; if none, it spends its one
+  member within weapon range on a clear line of sight; if none, it spends its one
   **move** via `MoveToward`, walking its FULL movement range along the BFS
   path toward the **nearest** living party member (the enemy is the BFS moving
   token so its own cell is mapped; the target's token is a wall, so it stops

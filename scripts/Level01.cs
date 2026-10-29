@@ -18,9 +18,11 @@ namespace Dcyberpunkgam;
 ///
 /// Weapons + items: every combatant starts equipped with basic head/body gear
 /// and a randomly rolled pistol (range 4, 2 dmg) or rifle (range 6, 3 dmg).
-/// Shooting hits only a target sitting exactly the weapon's range away along
-/// one of the 8 straight lines with a clear line of sight (no obstacle on the
-/// line; diagonals cannot cut a wall corner), for the weapon's damage. Party
+/// Shooting hits any target within the weapon's range along one of the 8
+/// straight lines (the closest cell in the line is always in range) with a
+/// clear line of sight (no obstacle on the line; diagonals cannot cut a wall
+/// corner), for the weapon's damage. A shoot may be used before or after the
+/// move; a shot always fires from the shooter's CURRENT position. Party
 /// members also start with BioStims (heal items).
 ///
 /// Actions: per turn each combatant has ONE action (SHOOT / WAIT / item) and
@@ -677,9 +679,10 @@ public partial class Level01 : Control
             MoveTo(cell);
     }
 
-    // Shoot: the target must sit exactly the active combatant's weapon range
-    // squares away along one of the 8 straight lines (horizontal, vertical,
-    // diagonal). Deals the weapon's damage.
+    // Shoot: the target must sit within the active combatant's weapon range
+    // along one of the 8 straight lines (horizontal, vertical, diagonal) with
+    // a clear line of sight — from the combatant's CURRENT position, whether
+    // or not it has moved this turn. Deals the weapon's damage.
     private void TryShootAt(Vector2I cell)
     {
         if (_actionUsed || !_shootTargets.Contains(cell))
@@ -750,6 +753,10 @@ public partial class Level01 : Control
     {
         _tokens[index].Position = new Vector2(cell.X * TileSize, cell.Y * TileSize);
         _reachable = ComputeDistances(cell, _turns.Combatants[index].MovementRange, index);
+        // A move changes where shots are fired from: refresh the shoot-target
+        // set from the new position so a shoot-after-move aims from here.
+        if (index == _turns.CurrentIndex)
+            ComputeShootTargets();
         RefreshHighlights();
     }
 
@@ -761,6 +768,10 @@ public partial class Level01 : Control
     {
         _tokens[_turns.CurrentIndex].Position = new Vector2(next.X * TileSize, next.Y * TileSize);
         _movedThisTurn = true;
+        // A move changes where shots are fired from: refresh the shoot-target
+        // set from the new position so a shoot-after-move aims from here.
+        ComputeShootTargets();
+        RefreshHighlights();
     }
 
     /// <summary>Test hook: act for the active enemy now (AI move/shoot + end turn).</summary>
@@ -907,43 +918,61 @@ public partial class Level01 : Control
         return false;
     }
 
-    // <to> is a shoot position for a weapon of <range> iff it sits exactly
-    // <range> squares away from <from> along one of the 8 straight lines
-    // (horizontal, vertical, diagonal).
+    // <to> is a shoot position for a weapon of <range> iff it sits no more
+    // than <range> squares away from <from> along one of the 8 straight lines
+    // (horizontal, vertical, diagonal) — the closest cell in the line is
+    // always in range.
     private static bool IsShootCell(Vector2I from, Vector2I to, int range)
     {
         int dx = to.X - from.X;
         int dy = to.Y - from.Y;
-        return (Math.Abs(dx) == range && dy == 0)
-            || (Math.Abs(dy) == range && dx == 0)
-            || (Math.Abs(dx) == range && Math.Abs(dy) == range);
+        return (Math.Abs(dx) <= range && dy == 0 && dx != 0)
+            || (Math.Abs(dy) <= range && dx == 0 && dy != 0)
+            || (Math.Abs(dx) <= range && Math.Abs(dy) <= range && dx != 0 && dy != 0);
     }
 
-    // Clear line of sight from <from> to <to> (which sits exactly a weapon's
-    // range away on one of the 8 lines): every intermediate cell between them
-    // must be walkable. On diagonals a wall at either corner (the two cells
-    // adjacent to a diagonal step) also blocks the shot.
+    // Clear line of sight from <from> to <to> (within a weapon's range on one
+    // of the 8 lines): every intermediate cell between them must be walkable.
+    // On diagonals a wall at either corner (the two cells adjacent to a
+    // diagonal step) also blocks the shot.
     private static bool HasLineOfSight(Vector2I from, Vector2I to, int range)
     {
-        int dx = (to.X - from.X) / range; // -1, 0 or 1 (the cells are range apart)
-        int dy = (to.Y - from.Y) / range;
+        int dist = Math.Max(Math.Abs(to.X - from.X), Math.Abs(to.Y - from.Y)); // 1..range
+        if (dist > range)
+            return false;
+        int dx = Math.Sign(to.X - from.X); // -1, 0 or 1 per step
+        int dy = Math.Sign(to.Y - from.Y);
         var cur = from;
-        for (int i = 0; i < range - 1; i++)
+        for (int i = 0; i < dist - 1; i++)
         {
             cur = new Vector2I(cur.X + dx, cur.Y + dy);
             if (Walkable[cur.Y, cur.X] != 1)
                 return false;
-            if (dx != 0 && dy != 0)
-            {
-                if (Walkable[cur.Y, cur.X - dx] != 1 || Walkable[cur.Y + dy, cur.X] != 1)
-                    return false;
-            }
+            if (dx != 0 && dy != 0 && CornerBlocked(cur, new Vector2I(dx, dy)))
+                return false;
         }
         return true;
     }
 
-    // Rebuild the shoot-target set for the active combatant (its weapon range,
-    // only cells with a clear line of sight from the current position).
+    // A diagonal step through <cell> is blocked if a wall sits at either
+    // corner (the two cells adjacent to the step's line); a corner past the
+    // grid edge counts as a wall too (bounds are checked before reading).
+    private static bool CornerBlocked(Vector2I cell, Vector2I dir)
+    {
+        var a = new Vector2I(cell.X - dir.X, cell.Y);
+        if (a.X < 0 || a.X >= GridWidth || a.Y < 0 || a.Y >= GridHeight)
+            return true;
+        if (Walkable[a.Y, a.X] != 1)
+            return true;
+        var b = new Vector2I(cell.X, cell.Y + dir.Y);
+        if (b.X < 0 || b.X >= GridWidth || b.Y < 0 || b.Y >= GridHeight)
+            return true;
+        return Walkable[b.Y, b.X] != 1;
+    }
+
+    // Rebuild the shoot-target set for the active combatant from its CURRENT
+    // position: every cell no more than its weapon range away on one of the 8
+    // straight lines with a clear line of sight.
     private void ComputeShootTargets()
     {
         _shootTargets.Clear();
@@ -953,9 +982,10 @@ public partial class Level01 : Control
         var from = CurrentCell();
         foreach (var dir in LineDirs)
         {
-            // Walk the line one cell at a time; the first obstacle ends it,
-            // and the cell exactly <range> away is a target iff the whole way
-            // (and, on diagonals, both corners of every step) is walkable.
+            // Walk the line one cell at a time; the first obstacle ends it.
+            // EVERY reachable cell up to <range> away is a target — a weapon
+            // can hit at any distance within its range, so the whole line
+            // (and, on diagonals, both corners of every step) must be walkable.
             for (int step = 1; step <= range; step++)
             {
                 var cell = from + dir * step;
@@ -963,12 +993,9 @@ public partial class Level01 : Control
                     break;
                 if (Walkable[cell.Y, cell.X] != 1)
                     break;
-                if (dir.X != 0 && dir.Y != 0
-                    && (Walkable[cell.Y, cell.X - dir.X] != 1
-                        || Walkable[cell.Y + dir.Y, cell.X] != 1))
+                if (dir.X != 0 && dir.Y != 0 && CornerBlocked(cell, dir))
                     break;
-                if (step == range)
-                    _shootTargets.Add(cell);
+                _shootTargets.Add(cell);
             }
         }
     }
@@ -980,8 +1007,9 @@ public partial class Level01 : Control
         _highlights.Clear();
 
         // Move mode: green highlights for reachable tiles. Shoot mode: red
-        // highlights on the 8 shoot-target tiles (only when the active
-        // combatant has not used its action yet).
+        // highlights on every shootable tile (in range with line of sight,
+        // from the CURRENT position; only when the active combatant has not
+        // used its action yet).
         if (_actionMode == ActionMode.Shoot && !_turns.Combatants[_turns.CurrentIndex].IsEnemy)
         {
             foreach (var cell in _shootTargets)
