@@ -21,7 +21,7 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - `tests/flow_test.gd` — headless SceneTree functional test (menu → level → 8-combatant initiative → rounds → movement range → BFS reachability → **camera panning + clamping** → **mouse click-to-move** → once-per-turn + UNDO → enemy auto-move + auto turn-end → back). ~52 checks.
 - `tests/cutscene_test.gd` — headless functional test (menu → SCENE TEST → reveal, speaker alternation, highlight, back)
 - `tests/resolution_test.gd` — headless test: menu RESOLUTION button cycles 1280x720 → 1600x900 → 1920x1080 → back
-- `tests/combat_test.gd` — headless combat test (equipment + random weapon assignment, shoot range in 8 directions, **weapon-based range/damage: pistol 4/2, rifle 6/3**, once-per-turn, WAIT, **enemy AI (shoot-in-range / step-toward-player)**, **BioStim heal**, death removes token + skips turns). ~61 checks.
+- `tests/combat_test.gd` — headless combat test (equipment + random weapon assignment, **circle-based shoot range (any direction, dx²+dy² ≤ range²) + LOS blocking by walls AND characters**, shooting-circle overlay, **weapon-based range/damage: pistol 4/2, rifle 6/3**, once-per-turn, WAIT, **enemy AI (move into shooting circle / hold + shoot)**, **BioStim heal**, death removes token + skips turns). ~70 checks.
 - `readme.me` — pre-existing file, untouched
 
 ## Cutscene (scene_test)
@@ -126,17 +126,22 @@ SCENE TEST button:
   buttons as disabled once their path is spent. Mode switching is free. UNDO
   re-arms both paths.
 - **Weapons** (`Weapon.cs`): the equipped weapon drives the shoot mechanic —
-  any target **within `Weapon.Range`** squares (distance 1..range) along one of
-  the 8 straight lines (h/v/45° diagonal) with a clear line of sight can be
-  hit, and a hit deals `Weapon.Damage`. A shoot may be used **before or after
-  the move**; a shot always fires from the shooter's **CURRENT position** —
-  moving recomputes the shoot-target set from the new cell (`MovePartyTo` for
-  the player's click-to-move and `MoveTokenTo` for enemy/undo moves both call
-  `ComputeShootTargets()` + `RefreshHighlights()`).
+  the shoot range is a **CIRCLE**: any cell with
+  `dx*dx + dy*dy <= Weapon.Range^2` (distance 1..range, **any direction**)
+  with a clear line of sight can be hit, and a hit deals `Weapon.Damage`.
+  A shoot may be used **before or after the move**; a shot always fires from
+  the shooter's **CURRENT position** — moving recomputes the shoot-target set
+  from the new cell (`MovePartyTo` for the player's click-to-move and
+  `MoveTokenTo` for enemy/undo moves both call `ComputeShootTargets()` +
+  `RefreshHighlights()`).
   `Weapon.Pistol` (range 4, dmg 2) and `Weapon.Rifle` (range 6, dmg 3) are the
   two built-in weapons. `IsShootCell` / `ComputeShootTargets` / `TryShootAt`
   are all weapon-aware (range + damage come from the active combatant's
-  `Equipment.Weapon`).
+  `Equipment.Weapon`). In **shoot mode** a soft range circle
+  (`_rangeCircle`, radius = range tiles, centered on the tile center) is drawn
+  around the active PARTY shooter so the player can see the range (hidden for
+  enemy turns / other modes); test hook `GetRangeCircle() -> float[4]`
+  returns `[x, y, w, h]` or `[-1,-1,-1,-1]` when hidden.
 - **Equipment** (`Equipment.cs`): head + body + weapon. Basic gear for now —
   Ballistic Cap (head) + Weave Vest (body) + a **random** Pistol or Rifle for
   ALL 8 combatants (assigned in `AssignStartingGear()`). `Equipment.ToText()`
@@ -145,24 +150,26 @@ SCENE TEST button:
   (heal 6) — party members start with **2** (enemies 0). Using one heals up to
   `MaxHitPoints` and consumes the action. `Character.UseItem` /
   `GetItemCount`.
-- **Line of sight**: a shot is only valid if the cells between shooter and
-  target are walkable — `HasLineOfSight(from, to, range)` walks the `dist-1`
-  intermediate cells on the line (where `dist` is the actual 1..range
-  separation) and also blocks a diagonal if a wall is at either corner of any
-  step (so you can't shoot through obstacles or around a wall's corner;
-  `CornerBlocked` bounds-checks corners past the grid edge). `ComputeShootTargets`
-  walks each of the 8 lines from the CURRENT position and adds EVERY cell up to
-  `range` away with a clear line (a weapon hits at any distance 1..range).
+- **Line of sight**: a shot is only valid if the segment shooter→target is
+  clear — `HasLineOfSight(from, to, range)` walks the intermediate cells with
+  an integer **Bresenham** (exact 45° diagonals are walked one-by-one; other
+  slopes use the standard two-error algorithm) and fails if any intermediate
+  cell is a wall **or occupied by another character** — you cannot shoot
+  through obstacles or through other players/enemies. The target's own cell is
+  the endpoint, not an obstacle. `ComputeShootTargets` iterates EVERY cell in
+  the shooting circle from the CURRENT position and keeps the ones with clear
+  line of sight (a weapon hits at any distance 1..range inside the circle).
 - **Enemy AI** (`EnemyAct()`), same rules as the player: each enemy turn it
-  spends its one **move** via `EnemyMoveToward`, walking its FULL movement
-  range along the BFS path toward the **nearest** living party member (the
-  enemy is the BFS moving token so its own cell is mapped; the target's token
-  is a wall, so it stops when adjacent/boxed), then spends its one **action**
-  via `EnemyShoot` — from the new position it fires at that target if it is
-  within weapon range on a straight line with a clear line of sight. The move
-  and shot latch `_movedThisTurn` / `_actionUsed` exactly like the player's
-  actions, so the actions menu reflects the spent budgets. Auto-end turn
-  (guarded by `_enemyActed`). `FindNearestPartyMember` picks the target.
+  spends its one **move** via `EnemyMoveToward`, walking the BFS path toward
+  the **nearest** living party member, but it **stops as soon as the target is
+  inside its own weapon's shooting circle** (it moves INTO shooting range
+  rather than right up next to the player; if already inside the circle it
+  holds its position and doesn't move), then spends its one **action** via
+  `EnemyShoot` — from the new position it fires at that target if it is inside
+  its shooting circle with a clear line of sight. The move and shot latch
+  `_movedThisTurn` / `_actionUsed` exactly like the player's actions, so the
+  actions menu reflects the spent budgets. Auto-end turn (guarded by
+  `_enemyActed`). `FindNearestPartyMember` picks the target.
 - **Death**: HP ≤ 0 → `IsDead`; the token is hidden from the map, no longer
   blocks movement (`IsOccupiedBy` skips the dead), and `TurnSystem.EndTurn`
   skips dead combatants when advancing (round wraps when everyone is dead).

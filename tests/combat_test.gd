@@ -1,8 +1,10 @@
 extends SceneTree
-# Combat test: Constitution/HP values, Shoot action (up to weapon range on a
-# straight line, 8 directions, any distance 1..range, weapon damage),
-# shoot-after-move (aims from the CURRENT position), death (token removed +
-# turn skipped), and the bottom-left actions menu (name on top, always on screen).
+# Combat test: Constitution/HP values, Shoot action (shooting CIRCLE: any
+# cell with dx^2+dy^2 <= range^2 in any direction, line of sight blocked by
+# walls AND other characters, weapon damage), the shooting-range circle
+# overlay (drawn in shoot mode, radius = weapon range), shoot-after-move
+# (aims from the CURRENT position), death (token removed + turn skipped), and
+# the bottom-left actions menu (name on top, always on screen).
 # Run: godot --headless --path . -s res://tests/combat_test.gd
 
 const TILE := 48
@@ -116,12 +118,12 @@ func _run() -> void:
 	level.UseItem("Vex")
 	_check(level.GetHitPoints("Vex") == hp_before,
 			"BioStim at full HP does nothing (got %d, was %d)" % [level.GetHitPoints("Vex"), hp_before])
-	# Damage Vex: Brute (pistol, move 13) always spends its full movement
+	# Damage Vex: Brute (pistol range 4, move 13) always spends its move
 	# first, then shoots from its NEW position. The party is clustered far
-	# west (x=0) and Brute sits far east at (26,1), so its 13-tile walk on
-	# the clear row y=1 ends at (13,1) — Vex at (0,1) is 13 away, out of
-	# pistol range 4 -> NO shot, proving move-then-shoot (an old
-	# shoot-then-move AI would have fired before walking).
+	# west (x=0) and Brute sits far east at (26,1); on the clear row y=1 its
+	# 13-tile walk only gets it to (13,1) (21 steps would be needed to reach
+	# Vex's shooting circle), so Vex at (0,1) is 13 away -> NO shot, proving
+	# move-then-shoot (a shoot-then-move AI would have fired before walking).
 	level.SetTokenCell("Vex", 0, 1)
 	level.SetTokenCell("Kaito", 0, 2)
 	level.SetTokenCell("Rook", 0, 3)
@@ -139,22 +141,29 @@ func _run() -> void:
 	_check(level.GetHitPoints("Vex") == 16,
 			"Vex 13 away from (13,1) is out of pistol range after the move (got %d HP)" % level.GetHitPoints("Vex"))
 	# Now Vex is in range of Brute's new position: Vex at (9,1) is 4 away,
-	# in pistol range on the clear row y=1 (others stay far west). Brute
-	# walks to (10,1) (adjacent) and shoots Vex for 2 from the new position.
+	# inside Brute's pistol shooting circle on the clear row y=1 (others stay
+	# far west). Brute is already in shooting range, so it HOLDS its position
+	# at (13,1) (no move needed) and shoots Vex for 2 from where it stands.
 	level.SetTokenCell("Vex", 9, 1)
 	level.ForceCurrent("Brute")
 	for i in 24:
 		await process_frame
 	var vex_wounded: int = level.GetHitPoints("Vex")
 	_check(vex_wounded == 14, "enemy AI shot Vex for pistol damage 2 from its moved position (got %d HP, want 14)" % vex_wounded)
+	# Brute never moved this turn: it was ALREADY inside the shooting circle
+	# (Vex 4 away, clear row), so the AI held its position and just shot.
+	_check(level.GetTokenCell("Brute") == Vector2i(13, 1),
+			"enemy already in range holds position (no move) and shoots (got %s)" % str(level.GetTokenCell("Brute")))
 	# Use the BioStim via the action menu: Vex is active now (after Brute's turn).
 	level.ForceCurrent("Vex")
 	level.get_node("ActionMenu/VBox/Actions/Heal").pressed.emit()
 	await process_frame
 	_check(level.GetHitPoints("Vex") == 16, "BioStim healed Vex back to 16 (got %d)" % level.GetHitPoints("Vex"))
 	_check(level.GetItemCount("Vex") == 1, "BioStim count dropped to 1 (got %d)" % level.GetItemCount("Vex"))
-	# Heal again after damage; count 1 -> 0 (Brute is already adjacent at
-	# (10,1) and shoots Vex at (9,1) again).
+	# Heal again after damage; count 1 -> 0. Brute stands at (13,1) and Vex
+	# is 4 away on the clear row — inside the pistol circle — so Brute holds
+	# its position and shoots Vex at (9,1) again (14 -> 12), then the BioStim
+	# brings 12 + 6 back to 16.
 	level.SetTokenCell("Vex", 9, 1)
 	level.SetInitiativeRolls([1, 1, 1, 1, 1, 1, 1, 1])
 	level.ForceCurrent("Brute")
@@ -195,7 +204,7 @@ func _run() -> void:
 	_check(brute_after == Vector2i(13, 1),
 			"enemy moved its full 13-tile range toward the players (got %s)" % str(brute_after))
 
-	# --- Rifle shoot range: up to 6 straight squares, 3 damage. ---
+	# --- Rifle shooting circle: radius 6 (dx^2+dy^2 <= 36), 3 damage. ---
 	# Vex sits at (9,1) on the clear top band (rows 0-2 have no walls). The
 	# AI test above left Brute at (13,1); move the whole enemy cluster far
 	# east so no enemy token overlaps the shoot cells being tested.
@@ -207,6 +216,19 @@ func _run() -> void:
 	level.SetWeapon("Vex", true)
 	level.ForceCurrent("Vex")
 	level.SetActionMode(SHOOT)
+	# The shooting-range circle is drawn in shoot mode: radius = weapon range
+	# (6 tiles = 288px), centered on Vex at (9,1) — origin (168, -216) px.
+	var circle: Array = level.GetRangeCircle()
+	_check(circle[2] > 0.0 and circle[3] > 0.0,
+			"shooting circle is drawn when shoot is selected (got %s)" % str(circle))
+	_check(absf(circle[2] - 12 * TILE) < 0.5 and absf(circle[3] - 12 * TILE) < 0.5,
+			"circle diameter = 2x weapon range in tiles (got %dx%d px)" % [int(circle[2]), int(circle[3])])
+	# The circle's origin = cell-center - radius; the center sits on the tile
+	# CENTER (+TILE/2), so expected origin = cell*TILE + TILE/2 - radius.
+	var cx: float = 9 * TILE + TILE / 2 - 6 * TILE
+	var cy: float = 1 * TILE + TILE / 2 - 6 * TILE
+	_check(absf(circle[0] - cx) < 0.5 and absf(circle[1] - cy) < 0.5,
+			"circle is centered on the character's cell (got origin %s)" % str(circle))
 	_check(level.IsShootTarget(15, 1), "rifle: 6 squares east is a shoot target")
 	_check(level.IsShootTarget(14, 1), "rifle: 5 squares east is a shoot target (within range)")
 	_check(level.IsShootTarget(13, 1), "rifle: 4 squares east is a shoot target (within range)")
@@ -214,9 +236,11 @@ func _run() -> void:
 	_check(level.IsShootTarget(3, 1), "rifle: 6 squares west is a shoot target")
 	_check(level.IsShootTarget(8, 1), "rifle: 1 square west is a shoot target (closest cell)")
 	_check(level.IsShootTarget(9, 7), "rifle: 6 squares south is a shoot target (clear column)")
-	_check(not level.IsShootTarget(15, 7), "rifle: 6-square south-east diagonal blocked (wall at 12,4)")
-	_check(not level.IsShootTarget(3, 7), "rifle: 6-square south-west diagonal blocked (wall at 7,3)")
-	_check(not level.IsShootTarget(16, 1), "rifle: 7 squares east is out of range (not a target)")
+	_check(level.IsShootTarget(13, 5), "rifle: (13,5) is INSIDE the circle — the old straight-line rule excluded it")
+	_check(not level.IsShootTarget(5, 5), "rifle: (5,5) is in the circle but line of sight is blocked by the wall at (7,3)")
+	_check(not level.IsShootTarget(15, 7), "rifle: (15,7) is outside the circle (dist^2 = 72 > 36)")
+	_check(not level.IsShootTarget(3, 7), "rifle: (3,7) is outside the circle (dist^2 = 72 > 36)")
+	_check(not level.IsShootTarget(16, 1), "rifle: 7 squares east is outside the circle (not a target)")
 	var click_rifle := InputEventMouseButton.new()
 	click_rifle.button_index = MOUSE_BUTTON_LEFT
 	click_rifle.pressed = true
@@ -227,13 +251,12 @@ func _run() -> void:
 	level.SetWeapon("Vex", false)
 	await process_frame
 
-	# --- Pistol shoot range: up to 4 straight squares, any of the 8 directions. ---
-	# (Wisp is at 9 HP here after the rifle test.)
+	# --- Pistol shooting circle: radius 4 (dx^2+dy^2 <= 16), any direction,
+	# 2 damage. (Wisp is at 9 HP here after the rifle test.)
 	# Set the cells BEFORE ForceCurrent: shoot targets are computed from the
-	# active combatant's position when the turn is set. Vex at (9,1) has clear
-	# lines in every direction except south-west (wall at 7,3) and south-east
-	# (wall at 12,4), which doubles as the line-of-sight (cannot shoot through
-	# obstacles) check. A target at ANY distance 1..4 on the line is valid.
+	# active combatant's position when the turn is set. Vex at (9,1): walls at
+	# (7,3) and (12,4) block line of sight into the south-east / south-west
+	# corners of the circle — the "cannot shoot through obstacles" check.
 	level.SetTokenCell("Vex", 9, 1)
 	level.SetTokenCell("Wisp", 13, 1)
 	# Keep the other enemies far away so the cell (13,1) holds only Wisp.
@@ -242,24 +265,30 @@ func _run() -> void:
 	level.SetTokenCell("Gutter", 25, 3)
 	level.ForceCurrent("Vex")
 	level.SetActionMode(SHOOT)
+	# Pistol circle overlay: radius 4 tiles = 192px, centered on (9,1).
+	var pcircle: Array = level.GetRangeCircle()
+	_check(absf(pcircle[2] - 8 * TILE) < 0.5 and absf(pcircle[3] - 8 * TILE) < 0.5,
+			"circle follows the pistol range (got %dx%d px)" % [int(pcircle[2]), int(pcircle[3])])
 	_check(level.IsShootTarget(13, 1), "enemy 4 squares east is a shoot target")
 	_check(level.IsShootTarget(12, 1), "cell 3 squares east is a shoot target (within range)")
 	_check(level.IsShootTarget(10, 1), "cell 1 square east is a shoot target (closest cell)")
 	_check(level.IsShootTarget(9, 5), "cell 4 squares south is a shoot target")
 	_check(level.IsShootTarget(9, 2), "cell 1 square south is a shoot target (closest cell)")
 	_check(level.IsShootTarget(5, 1), "cell 4 squares west is a shoot target")
-	_check(not level.IsShootTarget(13, 5), "4 squares southeast is blocked (wall at 12,4) — no shooting through obstacles")
-	_check(not level.IsShootTarget(5, 5), "4 squares southwest is blocked (wall at 7,3) — no shooting through obstacles")
-	_check(not level.IsShootTarget(14, 1), "5 squares away is out of range (not a target)")
-	_check(not level.IsShootTarget(12, 2), "knight's move (3,1) is not a shoot target")
+	_check(level.IsShootTarget(12, 3), "pistol: (12,3) is INSIDE the circle — the old straight-line rule excluded it")
+	_check(level.IsShootTarget(11, 3), "pistol: (11,3) is inside the circle with clear line of sight")
+	_check(not level.IsShootTarget(13, 5), "pistol: (13,5) is in the circle but line of sight is blocked (wall at 12,4)")
+	_check(not level.IsShootTarget(5, 5), "pistol: (5,5) is in the circle but line of sight is blocked (wall at 7,3)")
+	_check(not level.IsShootTarget(14, 1), "5 squares away is outside the circle (not a target)")
+	_check(not level.IsShootTarget(12, 4), "pistol: (12,4) is outside the circle (dist^2 = 18 > 16)")
 	_check(not level.IsShootTarget(9, 1), "own cell is not a shoot target")
 
-	# Clicking a non-target cell in shoot mode deals no damage (12,2 is off the
-	# straight lines — a knight's move, never a target).
+	# Clicking a non-target cell in shoot mode deals no damage (12,4 is outside
+	# the pistol circle, so it was never a valid target).
 	var click_wrong_cell := InputEventMouseButton.new()
 	click_wrong_cell.button_index = MOUSE_BUTTON_LEFT
 	click_wrong_cell.pressed = true
-	click_wrong_cell.position = Vector2(12 * TILE + TILE / 2, 2 * TILE + TILE / 2)
+	click_wrong_cell.position = Vector2(12 * TILE + TILE / 2, 4 * TILE + TILE / 2)
 	board.gui_input.emit(click_wrong_cell)
 	await process_frame
 	_check(level.GetHitPoints("Wisp") == 9, "clicking a non-target in shoot mode deals no damage (Wisp at 9 from rifle test)")

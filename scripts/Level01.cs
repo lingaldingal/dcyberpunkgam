@@ -18,12 +18,15 @@ namespace Dcyberpunkgam;
 ///
 /// Weapons + items: every combatant starts equipped with basic head/body gear
 /// and a randomly rolled pistol (range 4, 2 dmg) or rifle (range 6, 3 dmg).
-/// Shooting hits any target within the weapon's range along one of the 8
-/// straight lines (the closest cell in the line is always in range) with a
-/// clear line of sight (no obstacle on the line; diagonals cannot cut a wall
-/// corner), for the weapon's damage. A shoot may be used before or after the
-/// move; a shot always fires from the shooter's CURRENT position. Party
-/// members also start with BioStims (heal items).
+/// Shooting hits any target inside the weapon's shooting CIRCLE centered on
+/// the shooter (dx^2 + dy^2 <= range^2 — the "radius of the weapon's range"
+/// rule used by most tactics games, in ANY direction) with a clear line of
+/// sight (no obstacle or other character on the segment between them), for
+/// the weapon's damage. A shoot may be used before or after the move; a shot
+/// always fires from the shooter's CURRENT position. In shoot mode a soft
+/// circle of radius = weapon range is drawn around the active combatant so
+/// the player can see who is in range. Party members also start with
+/// BioStims (heal items).
 ///
 /// Actions: per turn each combatant has ONE action (SHOOT / WAIT / item) and
 /// ONE move. Mode switching (SHOOT <-> MOVE) is free; using either budget
@@ -31,12 +34,13 @@ namespace Dcyberpunkgam;
 /// everything).
 ///
 /// Enemy AI: enemies follow the same rules as the player — one action
-/// (shoot / wait / item) and one move per turn. On its turn an enemy spends
-/// its full movement range along the BFS path toward the nearest living
-/// party member, then (from the new position) shoots it if it is at weapon
-/// range with a clear line of sight. The move and the shot each latch the
-/// same per-turn budgets a player uses, so the actions menu reflects what
-/// the enemy has spent.
+/// (shoot / wait / item) and one move per turn. On its turn an enemy
+/// approaches the nearest living party member along the BFS path, STOPPING
+/// as soon as it stands inside its weapon's shooting circle (target within
+/// range with a clear line of sight) — it moves into shooting range rather
+/// than right up to the player — then (from the new position) shoots it.
+/// The move and the shot each latch the same per-turn budgets a player uses,
+/// so the actions menu reflects what the enemy has spent.
 ///
 /// Camera: the board is a plain Control that can be far larger than the window
 /// (levels are up to 2000x2000 grids). <see cref="_cameraPos"/> is the top-left
@@ -67,12 +71,7 @@ public partial class Level01 : Control
         new(1, 0), new(-1, 0), new(0, 1), new(0, -1),
     };
 
-    // The 8 straight-line shooting directions (horizontal, vertical, diagonal).
-    private static readonly Vector2I[] LineDirs =
-    {
-        new(1, 0), new(-1, 0), new(0, 1), new(0, -1),
-        new(1, 1), new(-1, 1), new(1, -1), new(-1, -1),
-    };
+
 
     // 1 = walkable, 0 = obstacle (16 rows x 28 cols).
     //
@@ -130,6 +129,8 @@ public partial class Level01 : Control
     private readonly List<Control> _tokens = new();
     private readonly List<ColorRect> _tokenBodies = new();
     private readonly List<ColorRect> _highlights = new();
+    // The shooting-range circle overlay (shoot mode, party turns only).
+    private ColorRect _rangeCircle = null!;
     private readonly List<Label> _tokenHpLabels = new();
     private readonly System.Random _rng = new();
 
@@ -472,6 +473,18 @@ public partial class Level01 : Control
     /// <summary>Test hook: the actions menu's position and size.</summary>
     public Vector2 GetActionMenuPos() => _actionMenu.Position;
 
+    /// <summary>
+    /// Test hook: the shooting-range circle overlay as [x, y, width, height]
+    /// when visible, or [-1, -1, -1, -1] when hidden.
+    /// </summary>
+    public float[] GetRangeCircle()
+    {
+        if (_rangeCircle == null || !_rangeCircle.Visible)
+            return new[] { -1f, -1f, -1f, -1f };
+        return new[] { _rangeCircle.Position.X, _rangeCircle.Position.Y,
+                       _rangeCircle.Size.X, _rangeCircle.Size.Y };
+    }
+
     private int IndexOf(string name)
     {
         for (int i = 0; i < Roster.Length; i++)
@@ -614,7 +627,7 @@ public partial class Level01 : Control
             parts.Add($"{c.Name} {c.Agility}+{_turns.Roll[i]}{(c.IsEnemy ? " (E)" : "")}");
         }
         return string.Join(" · ", parts)
-            + "  —  initiative d5 + Agility sets order (high first) · move = 5 + Agi/2 · per turn: ONE action (SHOOT / WAIT / BioStim) + ONE move · shoot = weapon range (pistol 4 / rifle 6) straight line, clear line of sight, weapon dmg (2 / 3) · HP = 5 + Con · WASD pans the map · END TURN";
+            + "  —  initiative d5 + Agility sets order (high first) · move = 5 + Agi/2 · per turn: ONE action (SHOOT / WAIT / BioStim) + ONE move · shoot = weapon's range CIRCLE (pistol 4 / rifle 6), no shooting through walls or characters, weapon dmg (2 / 3) · HP = 5 + Con · WASD pans the map · END TURN";
     }
 
     // BFS: shortest-path distance from <start> to every reachable tile, treating
@@ -681,10 +694,10 @@ public partial class Level01 : Control
             MoveTo(cell);
     }
 
-    // Shoot: the target must sit within the active combatant's weapon range
-    // along one of the 8 straight lines (horizontal, vertical, diagonal) with
-    // a clear line of sight — from the combatant's CURRENT position, whether
-    // or not it has moved this turn. Deals the weapon's damage.
+    // Shoot: the target must sit inside the active combatant's weapon's
+    // shooting CIRCLE (dx^2+dy^2 <= range^2, any direction) with a clear line
+    // of sight — from the combatant's CURRENT position, whether or not it has
+    // moved this turn. Deals the weapon's damage.
     private void TryShootAt(Vector2I cell)
     {
         if (_actionUsed || !_shootTargets.Contains(cell))
@@ -833,13 +846,20 @@ public partial class Level01 : Control
         return targetIndex;
     }
 
-    // The enemy's one move for the turn: walk the BFS path toward
-    // <targetIndex> up to its full movement range (or until it is adjacent,
-    // since the target's token is a BFS "wall", or boxed in by obstacles).
+    // The enemy's one move for the turn: it approaches <targetIndex> along
+    // the BFS path but STOPS as soon as it stands inside the target's shooting
+    // circle (target within the weapon's range with a clear line of sight), so
+    // it moves INTO shooting range instead of right up to the party member.
+    // If it can already shoot, it doesn't move at all. It also stops when
+    // adjacent (the target's token is a BFS "wall") or boxed in by obstacles.
     // Latches the move budget exactly like a player's move.
     private void EnemyMoveToward(int index, int targetIndex)
     {
         var enemy = _turns.Combatants[index];
+        var targetCell = (Vector2I)(_tokens[targetIndex].Position / TileSize);
+        int range = enemy.Equipment.Weapon.Range;
+        if (CanShootAt(CurrentCell(), targetCell, range))
+            return; // already in shooting range: hold position, let the shot land
         int steps = enemy.MovementRange;
         var pos = CurrentCell();
         while (steps-- > 0)
@@ -848,8 +868,7 @@ public partial class Level01 : Control
             // the enemy's own cell is in the map (its distance = how far it
             // still is). The target's token is a wall, so once adjacent no
             // neighbour can get any closer.
-            var toward = ComputeDistances(
-                (Vector2I)(_tokens[targetIndex].Position / TileSize), int.MaxValue, index);
+            var toward = ComputeDistances(targetCell, int.MaxValue, index);
             if (!toward.TryGetValue(pos, out int curD))
                 break; // boxed in by obstacles
             if (curD <= 1)
@@ -874,6 +893,11 @@ public partial class Level01 : Control
             if (step == null || bestStep >= curD)
                 break; // no neighbour is any closer: stop (adjacent or boxed)
             pos = step.Value;
+            // A single step cannot jump OUT of the shooting circle (the max
+            // in-circle distance is ~range*1.414, so one tile keeps the enemy
+            // inside), so the first in-circle step is a valid stopping point.
+            if (CanShootAt(pos, targetCell, range))
+                break;
         }
         if (pos != CurrentCell())
         {
@@ -883,16 +907,26 @@ public partial class Level01 : Control
         }
     }
 
-    // The enemy's action: if <targetIndex> sits at weapon range from the
-    // enemy's CURRENT position with a clear line of sight, shoot it (weapon
-    // damage). Latches the action budget exactly like a player's shoot.
+    // Can a shooter standing on <from> hit <cell> with a weapon of <range>?
+    // <cell> must sit inside the weapon's shooting circle (dx^2 + dy^2 <=
+    // range^2) with a clear line of sight (no obstacle or other token on the
+    // segment). Used by the enemy AI to decide where to stop and what to fire.
+    private bool CanShootAt(Vector2I from, Vector2I cell, int range)
+    {
+        return IsShootCell(from, cell, range) && HasLineOfSight(from, cell, range);
+    }
+
+    // The enemy's action: if <targetIndex> is inside its weapon's shooting
+    // circle from the enemy's CURRENT position with a clear line of sight,
+    // shoot it (weapon damage). Latches the action budget exactly like a
+    // player's shoot.
     private void EnemyShoot(int index, int targetIndex)
     {
         var enemy = _turns.Combatants[index];
         int weaponRange = enemy.Equipment.Weapon.Range;
         var from = CurrentCell();
         var cell = (Vector2I)(_tokens[targetIndex].Position / TileSize);
-        if (IsShootCell(from, cell, weaponRange) && HasLineOfSight(from, cell, weaponRange))
+        if (CanShootAt(from, cell, weaponRange))
         {
             ApplyShot(index, targetIndex);
             _actionUsed = true;
@@ -921,61 +955,92 @@ public partial class Level01 : Control
         return false;
     }
 
-    // <to> is a shoot position for a weapon of <range> iff it sits no more
-    // than <range> squares away from <from> along one of the 8 straight lines
-    // (horizontal, vertical, diagonal) — the closest cell in the line is
-    // always in range.
+    // <to> is a shoot position for a weapon of <range> iff it sits inside the
+    // weapon's shooting CIRCLE centered on <from>: dx^2 + dy^2 <= range^2
+    // (any direction, any distance 1..range — the classic "radius of the
+    // weapon's range" rule used by most tactics games).
     private static bool IsShootCell(Vector2I from, Vector2I to, int range)
     {
         int dx = to.X - from.X;
         int dy = to.Y - from.Y;
-        return (Math.Abs(dx) <= range && dy == 0 && dx != 0)
-            || (Math.Abs(dy) <= range && dx == 0 && dy != 0)
-            || (Math.Abs(dx) <= range && Math.Abs(dy) <= range && dx != 0 && dy != 0);
+        return (dx != 0 || dy != 0) && dx * dx + dy * dy <= range * range;
     }
 
-    // Clear line of sight from <from> to <to> (within a weapon's range on one
-    // of the 8 lines): every intermediate cell between them must be walkable.
-    // On diagonals a wall at either corner (the two cells adjacent to a
-    // diagonal step) also blocks the shot.
-    private static bool HasLineOfSight(Vector2I from, Vector2I to, int range)
+    // Clear line of sight from <from> to <to> (a cell within the weapon's
+    // shooting circle): every INTERMEDIATE cell on the straight segment
+    // between them must be walkable and hold no live token — so a shot cannot
+    // pass through obstacles or through other characters. The segment is
+    // walked one cell at a time with an integer Bresenham (horizontal,
+    // vertical, diagonal and sub-diagonal slopes alike); the target's own
+    // cell is the endpoint and not an obstacle.
+    private bool HasLineOfSight(Vector2I from, Vector2I to, int range)
     {
-        int dist = Math.Max(Math.Abs(to.X - from.X), Math.Abs(to.Y - from.Y)); // 1..range
-        if (dist > range)
+        if (!IsShootCell(from, to, range))
             return false;
-        int dx = Math.Sign(to.X - from.X); // -1, 0 or 1 per step
-        int dy = Math.Sign(to.Y - from.Y);
-        var cur = from;
-        for (int i = 0; i < dist - 1; i++)
+        int dx = to.X - from.X;
+        int dy = to.Y - from.Y;
+        int sx = Math.Sign(dx), sy = Math.Sign(dy);
+        int ax = Math.Abs(dx), ay = Math.Abs(dy);
+
+        // Exact 45-degree diagonals: the segment passes through every
+        // intermediate cell's center, so walk them one by one.
+        if (ax == ay)
         {
-            cur = new Vector2I(cur.X + dx, cur.Y + dy);
+            var diag = from;
+            while (diag != to)
+            {
+                diag = new Vector2I(diag.X + sx, diag.Y + sy);
+                if (diag == to)
+                    break;
+                if (Walkable[diag.Y, diag.X] != 1)
+                    return false; // wall on the diagonal
+                if (IsOccupiedBy(diag, -1))
+                    return false; // another character on the diagonal
+            }
+            return true;
+        }
+
+        // Other slopes (including steeper/shallower like (4,1)): integer
+        // Bresenham walks the cells whose centers the segment crosses.
+        int steps = Math.Max(ax, ay);
+        var cur = from;
+        int e2 = 2 * (ax >= ay ? ay : ax); // doubled error accumulator
+        int d2 = 2 * (ax >= ay ? ax : ay); // doubled dominant delta
+        for (int i = 0; i < steps; i++)
+        {
+            if (ax >= ay)
+            {
+                cur = new Vector2I(cur.X + sx, cur.Y);
+                if (e2 >= d2)
+                {
+                    cur = new Vector2I(cur.X, cur.Y + sy);
+                    e2 -= d2;
+                }
+            }
+            else
+            {
+                cur = new Vector2I(cur.X, cur.Y + sy);
+                if (e2 >= d2)
+                {
+                    cur = new Vector2I(cur.X + sx, cur.Y);
+                    e2 -= d2;
+                }
+            }
+            e2 += 2 * (ax >= ay ? ay : ax);
+            if (cur == to)
+                break; // target's own cell: endpoint, not an obstacle
             if (Walkable[cur.Y, cur.X] != 1)
-                return false;
-            if (dx != 0 && dy != 0 && CornerBlocked(cur, new Vector2I(dx, dy)))
-                return false;
+                return false; // shot passes through a wall
+            if (IsOccupiedBy(cur, -1))
+                return false; // shot passes through another character
         }
         return true;
     }
 
-    // A diagonal step through <cell> is blocked if a wall sits at either
-    // corner (the two cells adjacent to the step's line); a corner past the
-    // grid edge counts as a wall too (bounds are checked before reading).
-    private static bool CornerBlocked(Vector2I cell, Vector2I dir)
-    {
-        var a = new Vector2I(cell.X - dir.X, cell.Y);
-        if (a.X < 0 || a.X >= GridWidth || a.Y < 0 || a.Y >= GridHeight)
-            return true;
-        if (Walkable[a.Y, a.X] != 1)
-            return true;
-        var b = new Vector2I(cell.X, cell.Y + dir.Y);
-        if (b.X < 0 || b.X >= GridWidth || b.Y < 0 || b.Y >= GridHeight)
-            return true;
-        return Walkable[b.Y, b.X] != 1;
-    }
-
     // Rebuild the shoot-target set for the active combatant from its CURRENT
-    // position: every cell no more than its weapon range away on one of the 8
-    // straight lines with a clear line of sight.
+    // position: every cell inside the weapon's shooting circle
+    // (dx^2 + dy^2 <= range^2) with a clear line of sight (no obstacle or
+    // other token on the segment).
     private void ComputeShootTargets()
     {
         _shootTargets.Clear();
@@ -983,22 +1048,19 @@ public partial class Level01 : Control
             return;
         int range = _turns.Combatants[_turns.CurrentIndex].Equipment.Weapon.Range;
         var from = CurrentCell();
-        foreach (var dir in LineDirs)
+        for (int dy = -range; dy <= range; dy++)
         {
-            // Walk the line one cell at a time; the first obstacle ends it.
-            // EVERY reachable cell up to <range> away is a target — a weapon
-            // can hit at any distance within its range, so the whole line
-            // (and, on diagonals, both corners of every step) must be walkable.
-            for (int step = 1; step <= range; step++)
+            for (int dx = -range; dx <= range; dx++)
             {
-                var cell = from + dir * step;
+                if (dx == 0 && dy == 0)
+                    continue;
+                if (dx * dx + dy * dy > range * range)
+                    continue;
+                var cell = new Vector2I(from.X + dx, from.Y + dy);
                 if (cell.X < 0 || cell.X >= GridWidth || cell.Y < 0 || cell.Y >= GridHeight)
-                    break;
-                if (Walkable[cell.Y, cell.X] != 1)
-                    break;
-                if (dir.X != 0 && dir.Y != 0 && CornerBlocked(cell, dir))
-                    break;
-                _shootTargets.Add(cell);
+                    continue;
+                if (HasLineOfSight(from, cell, range))
+                    _shootTargets.Add(cell);
             }
         }
     }
@@ -1008,6 +1070,35 @@ public partial class Level01 : Control
         foreach (var rect in _highlights)
             rect.QueueFree();
         _highlights.Clear();
+
+        // The shooting-range circle: a soft ring centered on the active
+        // combatant, radius = weapon range in tiles. Shown in shoot mode for
+        // party turns so the player can see exactly who is in range (the red
+        // target squares inside it are the cells that are actually shootable).
+        // Enemies don't need the visual — the AI knows its own range.
+        if (_rangeCircle == null)
+        {
+            _rangeCircle = new ColorRect
+            {
+                Name = "RangeCircle",
+                Color = new Color(0.95f, 0.45f, 0.35f, 0.07f),
+                MouseFilter = MouseFilterEnum.Ignore,
+                ZIndex = -1, // under the tokens, above the tiles
+            };
+            _board.AddChild(_rangeCircle);
+        }
+        bool showCircle = _actionMode == ActionMode.Shoot
+            && _turnActive
+            && !_turns.Combatants[_turns.CurrentIndex].IsEnemy;
+        _rangeCircle.Visible = showCircle;
+        if (showCircle)
+        {
+            int radius = _turns.Combatants[_turns.CurrentIndex].Equipment.Weapon.Range * TileSize;
+            var cell = CurrentCell();
+            var center = new Vector2(cell.X * TileSize, cell.Y * TileSize) + new Vector2(TileSize / 2f, TileSize / 2f);
+            _rangeCircle.Position = new Vector2(center.X - radius, center.Y - radius);
+            _rangeCircle.Size = new Vector2(radius * 2, radius * 2);
+        }
 
         // Move mode: green highlights for reachable tiles. Shoot mode: red
         // highlights on every shootable tile (in range with line of sight,

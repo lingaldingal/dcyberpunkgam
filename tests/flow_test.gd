@@ -248,11 +248,14 @@ func _run_flow() -> void:
 	_check(p0.position == Vector2(0, 6 * TILE), "Vex moved to (0,6) after undo")
 
 	# --- Enemy AI: on an enemy's turn it moves toward the nearest party
-	# member (no party member is at weapon range from Brute here), then its
-	# turn ends automatically (no player input needed). Brute at (26,1) with
-	# pistol range 4 and movement 13: nearest player is Vex at (1,1); row y=1
-	# is clear from x=1 to x=26, so it walks west 13 tiles to (13,1) — 12 from
-	# Vex, still out of range — deterministic under the pinned pistols. ---
+	# member, stopping as soon as it is INSIDE its weapon's shooting circle
+	# (it moves into shooting range instead of right up to the player), then
+	# its turn ends automatically (no player input needed). Brute at (26,1)
+	# with pistol range 4 and movement 13: nearest player is Vex at (1,1);
+	# row y=1 is clear from x=1 to x=26. Its 13-tile walk only gets it to
+	# (13,1) — 12 from Vex, still outside the range-4 circle (reaching it
+	# would take 21 steps) — so it walks its full range, no shot yet.
+	# Deterministic under the pinned pistols. ---
 	# Reset to a known layout: party clustered left, enemies spread on the
 	# right so Brute's westward lane along row y=1 is unobstructed.
 	level.SetTokenCell("Vex", 1, 1)
