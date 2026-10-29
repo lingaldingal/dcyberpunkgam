@@ -6,7 +6,7 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - `GAMES.md` — game design outline (OUTDATED: references removed `CharacterData`; trust the code)
 - `project.godot` — main scene `res://scenes/main_menu.tscn`; `GameManager` C# autoload; `features` includes `C#`, `dotnet`
 - `scenes/main_menu.tscn` — title screen: NEW GAME / CONTINUE / SCENE TEST / RESOLUTION / QUIT
-- `scenes/level_01.tscn` — turn-based arena (20×12 grid board, 4 party + 4 enemy tokens, HUD, END TURN / UNDO / BACK)
+- `scenes/level_01.tscn` — turn-based arena (28×16 grid board, 4 party + 4 enemy tokens, HUD, END TURN / UNDO / BACK)
 - `scenes/scene_test.tscn` — basic 2D cutscene (two placeholder characters L/R, scrolling cheese dialogue, speaker highlight)
 - `scripts/GameManager.cs` — autoload: scene flow (StartGame / StartSceneTest / QuitToMenu); exposes `Instance`
 - `scripts/MainMenu.cs` — menu buttons incl. `OnResolutionPressed()` (cycles window size); `GetResolution()` test hook
@@ -93,14 +93,15 @@ SCENE TEST button:
   pinned to the origin) and sets `Board.Position = -camera`. The board's
   children keep board-local coords; only the board node moves. The info
   panel is constrained (800px + autowrap) so long text never overflows.
-- **Enemies auto-move** one tile in a random walkable direction after a short
-  delay (12 frames) in `_Process`, then **automatically end their turn**
-  (enemies have no other actions yet). Guarded by `_enemyActed` so the turn
-  ends exactly once. `OnBoardGuiInput` bails when `_turns.Current.IsEnemy`.
-- Map is 20 cols × 12 rows; obstacles + token positions mean some short
-  straight-line targets need a detour (e.g. Vex at (1,1) can't reach (1,11)
-  directly because Rook at (1,2) blocks the column — the left column detour is
-  12 steps, just over Vex's range 11).
+- **Enemies act** (shoot and/or move, see the Combat section's "Enemy AI")
+  after a short delay (12 frames) in `_Process`, then **automatically end
+  their turn**. Guarded by `_enemyActed` so the turn ends exactly once.
+  `OnBoardGuiInput` bails when `_turns.Current.IsEnemy` (no mouse control of
+  enemies).
+- Map is 28 cols × 16 rows, 71 obstacles (rows y=0..2 are a fully clear band;
+  the x=0 column is a clear vertical lane y=0..15 — both relied on by the
+  shoot tests). `StartCells`: party clustered top-left at (1,1)/(2,1)/(1,2)/
+  (2,2); enemies top-right at (26,1)/(25,1)/(26,2)/(25,2).
 - Scene has a third action button: **UNDO** (between END TURN and BACK).
   Test hooks: `HasMovedThisTurn() -> bool`, `UndoMove()`, `ForceEnemyMove()`
   (acts for the active enemy now: move + end turn), `GetCameraPos()`,
@@ -115,11 +116,15 @@ SCENE TEST button:
   `HitPoints = 5 + Constitution` (`MaxHitPoints`; see `Character.cs`). Party:
   Vex 11, Kaito 9, Rook 12, Mira 8. Enemies: Gutter 10, Slick 13, Brute 12,
   Wisp 7. HP readout floats above each token and updates on damage.
-- **One action per turn** (`_actionUsed`): a party member picks exactly ONE of
-  SHOOT / MOVE / WAIT / **BIOSTIM** from the **actions menu** (bottom-left
-  panel: character name on top, an equipment readout line, SHOOT / MOVE / WAIT
-  / BIOSTIM buttons; clamped to stay on screen via `ClampActionMenu()`). Mode
-  switching is free; performing the action consumes it. UNDO re-arms it.
+- **Per-turn budget** (one action + one move, latched independently): each
+  turn a party member may perform ONE action (SHOOT / WAIT / **BIOSTIM**) AND
+  ONE move — each latches itself (`_actionUsed` for the action,
+  `_movedThisTurn` for the move) but neither blocks the other. So shoot-then-
+  move, move-then-shoot, or just one of them all work. The **actions menu**
+  (bottom-left panel: name on top, an equipment readout line, SHOOT / MOVE /
+  WAIT / BIOSTIM buttons; clamped on screen via `ClampActionMenu()`) shows the
+  buttons as disabled once their path is spent. Mode switching is free. UNDO
+  re-arms both paths.
 - **Weapons** (`Weapon.cs`): the equipped weapon drives the shoot mechanic —
   targets must sit **exactly `Weapon.Range`** squares away along one of the 8
   straight lines (h/v/45° diagonal) and a hit deals `Weapon.Damage`.
@@ -135,11 +140,20 @@ SCENE TEST button:
   (heal 6) — party members start with **2** (enemies 0). Using one heals up to
   `MaxHitPoints` and consumes the action. `Character.UseItem` /
   `GetItemCount`.
-- **Enemy AI** (`DoEnemyMove()`): each enemy turn, if any living party member
-  sits **exactly at weapon range** on a straight line from the enemy → shoot
-  them; else step 1 tile toward the **nearest** living party member (BFS
-  `DistanceToCell`; a party member's own token is a BFS wall so the distance
-  falls back to a neighbour +1). Then auto-end turn (guarded by `_enemyActed`).
+- **Line of sight**: a shot is only valid if the cells between shooter and
+  target are walkable — `HasLineOfSight(from, to, range)` walks the `range-1`
+  intermediate cells on the line and also blocks a diagonal if a wall is at
+  either corner of any step (so you can't shoot through obstacles or around a
+  wall's corner). `ComputeShootTargets` only marks cells that pass both
+  `IsShootCell` (exactly `range` away on a straight line) AND `HasLineOfSight`.
+- **Enemy AI** (`DoEnemyMove()`), same rules as the player: each enemy turn it
+  first tries to **shoot** — `ShootAtRange` fires at the first living party
+  member at weapon range on a clear line of sight; if none, it spends its one
+  **move** via `MoveToward`, walking its FULL movement range along the BFS
+  path toward the **nearest** living party member (the enemy is the BFS moving
+  token so its own cell is mapped; the target's token is a wall, so it stops
+  when adjacent/boxed), then re-checks range and shoots again if the walk put
+  a party member in range. Auto-end turn (guarded by `_enemyActed`).
 - **Death**: HP ≤ 0 → `IsDead`; the token is hidden from the map, no longer
   blocks movement (`IsOccupiedBy` skips the dead), and `TurnSystem.EndTurn`
   skips dead combatants when advancing (round wraps when everyone is dead).
