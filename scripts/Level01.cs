@@ -30,11 +30,13 @@ namespace Dcyberpunkgam;
 /// latches it until END TURN (UNDO restores the turn-start cell and re-arms
 /// everything).
 ///
-/// Enemy AI: enemies follow the same rules as the player — on its turn an
-/// enemy shoots a party member with clear line of sight at weapon range if
-/// one exists; otherwise it moves up to its full movement range along the BFS
-/// path toward the nearest living party member, then shoots again if it
-/// ended up in range.
+/// Enemy AI: enemies follow the same rules as the player — one action
+/// (shoot / wait / item) and one move per turn. On its turn an enemy spends
+/// its full movement range along the BFS path toward the nearest living
+/// party member, then (from the new position) shoots it if it is at weapon
+/// range with a clear line of sight. The move and the shot each latch the
+/// same per-turn budgets a player uses, so the actions menu reflects what
+/// the enemy has spent.
 ///
 /// Camera: the board is a plain Control that can be far larger than the window
 /// (levels are up to 2000x2000 grids). <see cref="_cameraPos"/> is the top-left
@@ -217,7 +219,7 @@ public partial class Level01 : Control
             if (_enemyMoveFrames <= 0)
             {
                 _enemyMoveArmed = false;
-                DoEnemyMove();
+                EnemyAct();
             }
         }
 
@@ -774,27 +776,45 @@ public partial class Level01 : Control
         RefreshHighlights();
     }
 
-    /// <summary>Test hook: act for the active enemy now (AI move/shoot + end turn).</summary>
-    public void ForceEnemyMove() => DoEnemyMove();
+    /// <summary>Test hook: act for the active enemy now (AI move + shoot + end turn).</summary>
+    public void ForceEnemyMove() => EnemyAct();
 
     // Enemy AI (same rules as the player: one action + one move per turn):
-    // if a living party member has clear line of sight at the enemy's weapon
-    // range, shoot it. Otherwise move up to the enemy's full movement range
-    // along the BFS path toward the nearest living party member, then shoot
-    // again if the enemy ended up in range. Then end its turn. Guarded so it
-    // fires exactly once per turn.
-    private void DoEnemyMove()
+    // the enemy spends its full movement range walking the BFS path toward
+    // the nearest living party member, then shoots it — from the new
+    // position — if it ended up at weapon range with a clear line of sight.
+    // The move and the shot each latch the same per-turn budgets a player's
+    // actions use (_movedThisTurn / _actionUsed), so the actions menu shows
+    // exactly what the enemy has spent. Then its turn ends automatically.
+    // Guarded so it acts exactly once per turn.
+    private void EnemyAct()
     {
         if (_enemyActed)
             return;
         _enemyActed = true;
         int index = _turns.CurrentIndex;
-        var enemy = _turns.Combatants[index];
-        int weaponRange = enemy.Equipment.Weapon.Range;
+        int targetIndex = FindNearestPartyMember(index);
+        if (targetIndex < 0)
+        {
+            // No living party member reachable (or all dead): just end the turn.
+            _turns.EndTurn();
+            SetActive();
+            return;
+        }
 
-        // Nearest living party member (BFS distance from the enemy). A party
-        // member's own token cell is a BFS "wall", so DistanceToCell also
-        // accepts a cell whose neighbour is in the map (distance = 1 more).
+        EnemyMoveToward(index, targetIndex);
+        EnemyShoot(index, targetIndex);
+        // Enemy has acted: advance to the next combatant.
+        _turns.EndTurn();
+        SetActive();
+    }
+
+    // Nearest living party member by BFS path distance from <index> (-1 if
+    // none is reachable or all are dead). A party member's own token cell is
+    // a BFS "wall", so DistanceToCell also accepts a cell whose neighbour is
+    // in the map (distance = 1 more).
+    private int FindNearestPartyMember(int index)
+    {
         var dist = ComputeDistances(CurrentCell(), int.MaxValue, index);
         int targetIndex = -1;
         int best = int.MaxValue;
@@ -803,59 +823,21 @@ public partial class Level01 : Control
             var c = _turns.Combatants[i];
             if (c.IsEnemy || c.IsDead)
                 continue;
-            var cell = (Vector2I)(_tokens[i].Position / TileSize);
-            int d = DistanceToCell(dist, cell);
+            int d = DistanceToCell(dist, (Vector2I)(_tokens[i].Position / TileSize));
             if (d < best)
             {
                 best = d;
                 targetIndex = i;
             }
         }
-        if (targetIndex < 0)
-        {
-            // No party member reachable (or all dead): just end the turn.
-            _turns.EndTurn();
-            SetActive();
-            return;
-        }
-
-        if (!ShootAtRange(index, weaponRange))
-        {
-            // No shot available: spend the move toward the target, then check
-            // the range again from the new position.
-            MoveToward(index, targetIndex);
-            ShootAtRange(index, weaponRange);
-        }
-        // Enemy has acted: advance to the next combatant.
-        _turns.EndTurn();
-        SetActive();
+        return targetIndex;
     }
 
-    // The enemy shoots the first living party member that sits at its weapon
-    // range on a straight line with a clear line of sight. Returns true if a
-    // shot was fired (the enemy's action is consumed).
-    private bool ShootAtRange(int index, int weaponRange)
-    {
-        var from = CurrentCell();
-        for (int i = 0; i < _turns.Combatants.Count; i++)
-        {
-            var c = _turns.Combatants[i];
-            if (c.IsEnemy || c.IsDead)
-                continue;
-            var cell = (Vector2I)(_tokens[i].Position / TileSize);
-            if (IsShootCell(from, cell, weaponRange) && HasLineOfSight(from, cell, weaponRange))
-            {
-                ApplyShot(index, i);
-                return true;
-            }
-        }
-        return false;
-    }
-
-    // The enemy spends its one move for the turn: it walks along the BFS path
-    // toward <targetIndex>, up to its full movement range (or until it is
-    // adjacent to the target, which is a token and so a BFS "wall").
-    private void MoveToward(int index, int targetIndex)
+    // The enemy's one move for the turn: walk the BFS path toward
+    // <targetIndex> up to its full movement range (or until it is adjacent,
+    // since the target's token is a BFS "wall", or boxed in by obstacles).
+    // Latches the move budget exactly like a player's move.
+    private void EnemyMoveToward(int index, int targetIndex)
     {
         var enemy = _turns.Combatants[index];
         int steps = enemy.MovementRange;
@@ -894,7 +876,28 @@ public partial class Level01 : Control
             pos = step.Value;
         }
         if (pos != CurrentCell())
+        {
             MoveTokenTo(index, pos);
+            _movedThisTurn = true;
+            UpdateActionMenu();
+        }
+    }
+
+    // The enemy's action: if <targetIndex> sits at weapon range from the
+    // enemy's CURRENT position with a clear line of sight, shoot it (weapon
+    // damage). Latches the action budget exactly like a player's shoot.
+    private void EnemyShoot(int index, int targetIndex)
+    {
+        var enemy = _turns.Combatants[index];
+        int weaponRange = enemy.Equipment.Weapon.Range;
+        var from = CurrentCell();
+        var cell = (Vector2I)(_tokens[targetIndex].Position / TileSize);
+        if (IsShootCell(from, cell, weaponRange) && HasLineOfSight(from, cell, weaponRange))
+        {
+            ApplyShot(index, targetIndex);
+            _actionUsed = true;
+            UpdateActionMenu();
+        }
     }
 
     private Vector2I CurrentCell()

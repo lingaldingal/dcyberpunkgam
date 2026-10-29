@@ -116,25 +116,47 @@ func _run() -> void:
 	level.UseItem("Vex")
 	_check(level.GetHitPoints("Vex") == hp_before,
 			"BioStim at full HP does nothing (got %d, was %d)" % [level.GetHitPoints("Vex"), hp_before])
-	# Damage Vex: enemy Brute (pistol) is 4 squares away (within range 4) and
-	# auto-shoots Vex for 2. Row y=1 is completely clear, so the line of
-	# sight is open.
-	level.SetTokenCell("Vex", 5, 1)
-	level.SetTokenCell("Brute", 9, 1)
+	# Damage Vex: Brute (pistol, move 13) always spends its full movement
+	# first, then shoots from its NEW position. The party is clustered far
+	# west (x=0) and Brute sits far east at (26,1), so its 13-tile walk on
+	# the clear row y=1 ends at (13,1) — Vex at (0,1) is 13 away, out of
+	# pistol range 4 -> NO shot, proving move-then-shoot (an old
+	# shoot-then-move AI would have fired before walking).
+	level.SetTokenCell("Vex", 0, 1)
+	level.SetTokenCell("Kaito", 0, 2)
+	level.SetTokenCell("Rook", 0, 3)
+	level.SetTokenCell("Mira", 0, 4)
+	level.SetTokenCell("Brute", 26, 1)
+	level.SetTokenCell("Slick", 26, 3)
+	level.SetTokenCell("Gutter", 25, 3)
+	level.SetTokenCell("Wisp", 25, 4)
+	level.SetInitiativeRolls([1, 1, 1, 1, 1, 1, 1, 1])
+	level.ForceCurrent("Brute")
+	for i in 24:
+		await process_frame
+	_check(level.GetTokenCell("Brute") == Vector2i(13, 1),
+			"enemy Brute moved its full range to (13,1) before shooting (got %s)" % str(level.GetTokenCell("Brute")))
+	_check(level.GetHitPoints("Vex") == 16,
+			"Vex 13 away from (13,1) is out of pistol range after the move (got %d HP)" % level.GetHitPoints("Vex"))
+	# Now Vex is in range of Brute's new position: Vex at (9,1) is 4 away,
+	# in pistol range on the clear row y=1 (others stay far west). Brute
+	# walks to (10,1) (adjacent) and shoots Vex for 2 from the new position.
+	level.SetTokenCell("Vex", 9, 1)
 	level.ForceCurrent("Brute")
 	for i in 24:
 		await process_frame
 	var vex_wounded: int = level.GetHitPoints("Vex")
-	_check(vex_wounded == 14, "enemy AI shot Vex for pistol damage 2 (got %d HP, want 14)" % vex_wounded)
+	_check(vex_wounded == 14, "enemy AI shot Vex for pistol damage 2 from its moved position (got %d HP, want 14)" % vex_wounded)
 	# Use the BioStim via the action menu: Vex is active now (after Brute's turn).
 	level.ForceCurrent("Vex")
 	level.get_node("ActionMenu/VBox/Actions/Heal").pressed.emit()
 	await process_frame
 	_check(level.GetHitPoints("Vex") == 16, "BioStim healed Vex back to 16 (got %d)" % level.GetHitPoints("Vex"))
 	_check(level.GetItemCount("Vex") == 1, "BioStim count dropped to 1 (got %d)" % level.GetItemCount("Vex"))
-	# Heal again after damage; count 1 -> 0.
-	level.SetTokenCell("Vex", 5, 1)
-	level.SetTokenCell("Brute", 9, 1)
+	# Heal again after damage; count 1 -> 0 (Brute is already adjacent at
+	# (10,1) and shoots Vex at (9,1) again).
+	level.SetTokenCell("Vex", 9, 1)
+	level.SetInitiativeRolls([1, 1, 1, 1, 1, 1, 1, 1])
 	level.ForceCurrent("Brute")
 	for i in 24:
 		await process_frame
