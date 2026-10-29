@@ -71,6 +71,11 @@ func _run_flow() -> void:
 		_finish()
 		return
 	await process_frame  # ensure Level01._Ready (turn-system init) completed
+	# Weapons are rolled randomly at encounter start; pin everyone to the
+	# pistol (range 4) so the enemy AI (shoot-or-approach) is deterministic.
+	for n in ["Vex", "Kaito", "Rook", "Mira", "Gutter", "Slick", "Brute", "Wisp"]:
+		level.SetWeapon(n, false)
+	await process_frame
 
 	# Level hosts exactly 8 tokens: 4 party (P*) + 4 enemies (E*).
 	var party := 0
@@ -240,20 +245,35 @@ func _run_flow() -> void:
 	await process_frame
 	_check(p0.position == Vector2(0, 6 * TILE), "Vex moved to (0,6) after undo")
 
-	# --- Enemy auto-move: on an enemy's turn it steps one random tile,
-	# then its turn ends automatically (no player input needed). ---
+	# --- Enemy AI: on an enemy's turn it steps one tile toward the nearest
+	# party member (no party member is at weapon range from Brute here), then
+	# its turn ends automatically (no player input needed). Brute at (17,1):
+	# nearest player is Vex at (1,1), and (16,1) is walkable, so it must step
+	# west to (16,1) — deterministic under the pinned pistols. ---
+	# Reset to a known layout: party clustered left, enemies clustered right.
+	level.SetTokenCell("Vex", 1, 1)
+	level.SetTokenCell("Kaito", 2, 1)
+	level.SetTokenCell("Rook", 1, 2)
+	level.SetTokenCell("Mira", 2, 2)
+	level.SetTokenCell("Brute", 17, 1)
+	level.SetTokenCell("Slick", 18, 1)
+	level.SetTokenCell("Gutter", 17, 2)
+	level.SetTokenCell("Wisp", 18, 2)
 	level.ForceCurrent("Brute")
 	await process_frame
 	var brute_before: Vector2i = level.GetTokenCell("Brute")
-	# Wait for the enemy auto-move (armed for 12 frames) to fire.
+	_check(brute_before == Vector2i(17, 1), "Brute starts at (17,1) (got %s)" % str(brute_before))
+	# Wait for the enemy AI (armed for 12 frames) to fire.
 	for i in 20:
 		await process_frame
 	var brute_after: Vector2i = level.GetTokenCell("Brute")
 	var moved := Vector2i(brute_after.x - brute_before.x, brute_after.y - brute_before.y)
 	_check(abs(moved.x) + abs(moved.y) == 1,
 			"enemy Brute auto-moved one tile (delta %s)" % str(moved))
+	_check(brute_after == Vector2i(16, 1),
+			"enemy Brute moved toward the players (got %s, want (16,1))" % str(brute_after))
 	_check(level.GetCurrentName() != "Brute",
-			"enemy turn auto-ended after moving (now '%s')" % level.GetCurrentName())
+			"enemy turn auto-ended after acting (now '%s')" % level.GetCurrentName())
 
 	# BACK returns to the menu.
 	level.get_node("Center/Panel/Actions/Back").pressed.emit()

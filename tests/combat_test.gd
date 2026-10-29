@@ -9,6 +9,17 @@ const SHOOT := 1  # Level01.ActionMode.Shoot
 const MOVE := 0   # Level01.ActionMode.Move
 
 var _failures := 0
+var level: Node = null
+
+# Weapons are rolled randomly at encounter start; the AI also shoots, so pin
+# everyone to the pistol (range 4, 2 dmg) for deterministic expectations.
+const NAMES := ["Vex", "Kaito", "Rook", "Mira", "Gutter", "Slick", "Brute", "Wisp"]
+
+
+func _pin_weapons() -> void:
+	for n in NAMES:
+		level.SetWeapon(n, false)
+	await process_frame
 
 
 func _initialize() -> void:
@@ -20,7 +31,7 @@ func _run() -> void:
 	root.add_child(menu)
 	await process_frame
 	menu.get_node("Center/Panel/NewGame").pressed.emit()
-	var level: Node = null
+	level = null
 	for i in 60:
 		await process_frame
 		level = root.get_node_or_null("Level01")
@@ -32,6 +43,7 @@ func _run() -> void:
 		return
 	await process_frame
 	var board: Node = level.get_node("Board")
+	await _pin_weapons()
 
 	# --- HP = 5 + Constitution for everyone; Constitution in [7, 13]. ---
 	_check(level.GetHitPoints("Vex") == 16, "Vex HP = 5 + Con 11 = 16 (got %d)" % level.GetHitPoints("Vex"))
@@ -75,7 +87,109 @@ func _run() -> void:
 	_check(tiny_pos.x >= 0.0 and tiny_pos.y >= 0.0,
 			"menu stays on screen on a tiny viewport (got %s)" % str(tiny_pos))
 
-	# --- Shoot range: exactly 4 straight squares, any of the 8 directions. ---
+	# --- Equipment: everyone has head + body gear + a pistol/rifle. ---
+	_check(level.GetEquipment("Vex") == "Pistol · Ballistic Cap · Weave Vest",
+			"Vex equipped with basic gear + pistol (got '%s')" % level.GetEquipment("Vex"))
+	for n in NAMES:
+		var w: String = level.GetWeaponName(n)
+		_check(w == "Pistol" or w == "Rifle",
+				"%s has a pistol or rifle (got '%s')" % [n, w])
+		_check(level.GetEquipment(n).ends_with("· Ballistic Cap · Weave Vest"),
+				"%s has the basic head/body gear (got '%s')" % [n, level.GetEquipment(n)])
+	# Party members start with BioStims; enemies don't.
+	_check(level.GetItemCount("Vex") == 2, "party members start with 2 BioStims (got %d)" % level.GetItemCount("Vex"))
+	_check(level.GetItemCount("Brute") == 0, "enemies start with no BioStims")
+	# Weapons drive the shoot mechanic: pistol 4/2, rifle 6/3.
+	_check(level.GetWeaponRange("Vex") == 4 and level.GetWeaponDamage("Vex") == 2,
+			"pistol is range 4, 2 dmg (got %d/%d)" % [level.GetWeaponRange("Vex"), level.GetWeaponDamage("Vex")])
+	level.SetWeapon("Vex", true)
+	_check(level.GetWeaponName("Vex") == "Rifle", "SetWeapon swaps Vex to the rifle")
+	_check(level.GetWeaponRange("Vex") == 6 and level.GetWeaponDamage("Vex") == 3,
+			"rifle is range 6, 3 dmg (got %d/%d)" % [level.GetWeaponRange("Vex"), level.GetWeaponDamage("Vex")])
+	level.SetWeapon("Vex", false)
+	await process_frame
+
+	# --- BioStim: heals 6 HP (capped at max), consumes the item + the action. ---
+	level.ForceCurrent("Vex")
+	var hp_before: int = level.GetHitPoints("Vex")
+	level.UseItem("Vex")
+	_check(level.GetHitPoints("Vex") == hp_before,
+			"BioStim at full HP does nothing (got %d, was %d)" % [level.GetHitPoints("Vex"), hp_before])
+	# Damage Vex: enemy Brute (pistol) sits at exactly weapon range 4 and
+	# auto-shoots Vex for 2.
+	level.SetTokenCell("Vex", 5, 6)
+	level.SetTokenCell("Brute", 9, 6)
+	level.ForceCurrent("Brute")
+	for i in 24:
+		await process_frame
+	var vex_wounded: int = level.GetHitPoints("Vex")
+	_check(vex_wounded == 14, "enemy AI shot Vex for pistol damage 2 (got %d HP, want 14)" % vex_wounded)
+	# Use the BioStim via the action menu: Vex is active now (after Brute's turn).
+	level.ForceCurrent("Vex")
+	level.get_node("ActionMenu/VBox/Actions/Heal").pressed.emit()
+	await process_frame
+	_check(level.GetHitPoints("Vex") == 16, "BioStim healed Vex back to 16 (got %d)" % level.GetHitPoints("Vex"))
+	_check(level.GetItemCount("Vex") == 1, "BioStim count dropped to 1 (got %d)" % level.GetItemCount("Vex"))
+	# Heal again after damage; count 1 -> 0.
+	level.SetTokenCell("Vex", 5, 6)
+	level.SetTokenCell("Brute", 9, 6)
+	level.ForceCurrent("Brute")
+	for i in 24:
+		await process_frame
+	level.ForceCurrent("Vex")
+	level.get_node("ActionMenu/VBox/Actions/Heal").pressed.emit()
+	await process_frame
+	_check(level.GetHitPoints("Vex") == 16 and level.GetItemCount("Vex") == 0,
+			"second BioStim used, none left (got %d HP, %d stims)" % [level.GetHitPoints("Vex"), level.GetItemCount("Vex")])
+	# No stims left: the menu's heal button is disabled.
+	var heal_btn: Button = level.get_node("ActionMenu/VBox/Actions/Heal")
+	_check(heal_btn.disabled == true, "BIOSTIM button disabled at 0 stims")
+	_check(heal_btn.text == "BIOSTIM x0", "BIOSTIM button shows the count (got '%s')" % heal_btn.text)
+
+	# --- Enemy AI: shoots a party member exactly at weapon range. ---
+	# (Brute's shots above already prove it: Vex lost exactly pistol damage
+	# each turn instead of being ignored.)
+	_check(level.GetHitPoints("Kaito") == 14, "AI only shot the in-range target (Kaito untouched, got %d)" % level.GetHitPoints("Kaito"))
+
+	# --- Enemy AI: moves toward the nearest party member when out of range. ---
+	# Vex far west, Brute east; force Brute active and let it act.
+	level.SetTokenCell("Vex", 0, 6)
+	level.SetTokenCell("Kaito", 0, 7)
+	level.SetTokenCell("Rook", 0, 8)
+	level.SetTokenCell("Mira", 0, 9)
+	level.SetTokenCell("Brute", 19, 6)
+	level.ForceCurrent("Brute")
+	var brute_before: Vector2i = level.GetTokenCell("Brute")
+	for i in 24:
+		await process_frame
+	var brute_after: Vector2i = level.GetTokenCell("Brute")
+	_check(brute_after.x < brute_before.x,
+			"enemy moved toward the players (x %d -> %d)" % [brute_before.x, brute_after.x])
+
+	# --- Rifle shoot range: exactly 6 straight squares, 3 damage. ---
+	level.SetTokenCell("Vex", 9, 6)
+	level.SetTokenCell("Wisp", 15, 6)
+	level.SetWeapon("Vex", true)
+	level.ForceCurrent("Vex")
+	level.SetActionMode(SHOOT)
+	_check(level.IsShootTarget(15, 6), "rifle: 6 squares east is a shoot target")
+	_check(level.IsShootTarget(15, 0), "rifle: 6-square northeast diagonal is a shoot target")
+	_check(level.IsShootTarget(3, 0), "rifle: 6-square northwest diagonal is a shoot target")
+	_check(not level.IsShootTarget(13, 6), "rifle: 4 squares east is NOT a target (pistol-only)")
+	_check(not level.IsShootTarget(14, 6), "rifle: 5 squares east is not a target")
+	_check(not level.IsShootTarget(16, 6), "rifle: 7 squares east is not a target")
+	var click_rifle := InputEventMouseButton.new()
+	click_rifle.button_index = MOUSE_BUTTON_LEFT
+	click_rifle.pressed = true
+	click_rifle.position = Vector2(15 * TILE + TILE / 2, 6 * TILE + TILE / 2)
+	board.gui_input.emit(click_rifle)
+	await process_frame
+	_check(level.GetHitPoints("Wisp") == 9, "rifle shot deals 3 damage (got %d HP, was 12)" % level.GetHitPoints("Wisp"))
+	level.SetWeapon("Vex", false)
+	await process_frame
+
+	# --- Pistol shoot range: exactly 4 straight squares, any of the 8 directions. ---
+	# (Wisp is at 9 HP here after the rifle test.)
 	# Set the cells BEFORE ForceCurrent: shoot targets are computed from the
 	# active combatant's position when the turn is set. Vex is centered so all
 	# 8 directions fall in-bounds.
@@ -101,7 +215,7 @@ func _run() -> void:
 	click_wrong_cell.position = Vector2(12 * TILE + TILE / 2, 6 * TILE + TILE / 2)
 	board.gui_input.emit(click_wrong_cell)
 	await process_frame
-	_check(level.GetHitPoints("Wisp") == 12, "clicking a non-target in shoot mode deals no damage")
+	_check(level.GetHitPoints("Wisp") == 9, "clicking a non-target in shoot mode deals no damage (Wisp at 9 from rifle test)")
 
 	# A real shot: click Wisp's cell (13,6). 2 damage, and the action is consumed.
 	var click_shoot := InputEventMouseButton.new()
@@ -110,11 +224,11 @@ func _run() -> void:
 	click_shoot.position = Vector2(13 * TILE + TILE / 2, 6 * TILE + TILE / 2)
 	board.gui_input.emit(click_shoot)
 	await process_frame
-	_check(level.GetHitPoints("Wisp") == 10, "shoot deals 2 damage (got %d HP)" % level.GetHitPoints("Wisp"))
+	_check(level.GetHitPoints("Wisp") == 7, "shoot deals 2 damage (got %d HP, was 9)" % level.GetHitPoints("Wisp"))
 	# Second click: action already used this turn -> no extra damage.
 	board.gui_input.emit(click_shoot)
 	await process_frame
-	_check(level.GetHitPoints("Wisp") == 10, "second click does not shoot again (once per turn)")
+	_check(level.GetHitPoints("Wisp") == 7, "second click does not shoot again (once per turn)")
 	# A valid diagonal target with no enemy there does no damage.
 	level.ForceCurrent("Vex")
 	level.SetActionMode(SHOOT)
@@ -124,7 +238,7 @@ func _run() -> void:
 	click_diag.position = Vector2(13 * TILE + TILE / 2, 10 * TILE + TILE / 2)
 	board.gui_input.emit(click_diag)
 	await process_frame
-	_check(level.GetHitPoints("Wisp") == 10, "diagonal click at empty target does no damage")
+	_check(level.GetHitPoints("Wisp") == 7, "diagonal click at empty target does no damage")
 
 	# --- WAIT consumes the action (no damage, no move). ---
 	level.ForceCurrent("Vex")
@@ -137,10 +251,11 @@ func _run() -> void:
 	click_after_wait.position = Vector2(13 * TILE + TILE / 2, 6 * TILE + TILE / 2)
 	board.gui_input.emit(click_after_wait)
 	await process_frame
-	_check(level.GetHitPoints("Wisp") == 10, "WAIT consumes the action (no shot after)")
+	_check(level.GetHitPoints("Wisp") == 7, "WAIT consumes the action (no shot after)")
 
-	# --- Death: HP hits 0 -> token removed from the map, no more turns. ---
-	# Rook (party) shoots Wisp (12 HP) to death: 6 shots, one per turn.
+	# --- Death: HP hits 0 (or below) -> token removed from the map, no more turns. ---
+	# Rook (party, pistol) shoots Wisp (7 HP here) to death: 4 shots, one per turn.
+	# 7 -> 5 -> 3 -> 1 -> -1 (overshoot; death is HP <= 0).
 	# Brute is forced current first: it is an enemy, so it auto-moves and
 	# auto-ends, handing the turn to Rook in the [1,1,1,1,1,1,1,1] order.
 	level.SetInitiativeRolls([1, 1, 1, 1, 1, 1, 1, 1])
@@ -166,7 +281,7 @@ func _run() -> void:
 		end_turn.pressed.emit()
 		await process_frame
 		shots += 1
-	_check(level.GetHitPoints("Wisp") == 0, "Wisp HP reached 0 (got %d)" % level.GetHitPoints("Wisp"))
+	_check(level.GetHitPoints("Wisp") <= 0, "Wisp HP reached 0 (got %d)" % level.GetHitPoints("Wisp"))
 	_check(not level.IsAlive("Wisp"), "Wisp is dead")
 	_check(token_wisp.visible == false, "dead Wisp's token is removed from the map")
 	# The turn order (rolls all 1) is Brute, Rook, Slick, Vex, Gutter, Kaito,

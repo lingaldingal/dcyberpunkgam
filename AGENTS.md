@@ -11,14 +11,17 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - `scripts/GameManager.cs` — autoload: scene flow (StartGame / StartSceneTest / QuitToMenu); exposes `Instance`
 - `scripts/MainMenu.cs` — menu buttons incl. `OnResolutionPressed()` (cycles window size); `GetResolution()` test hook
 - `scripts/Level01.cs`, `scripts/SceneTest.cs`
-- `scripts/Character.cs` — combatant data (Name, Color, Agility, `IsEnemy`, `MovementRange` = 5 + Agility/2 floored)
+- `scripts/Character.cs` — combatant data (Name, Color, Agility, `IsEnemy`, `MovementRange` = 5 + Agility/2 floored, `Constitution`/`HitPoints`/`MaxHitPoints`, `Equipment`, `Items` inventory, `UseItem`/`GetItemCount`/`Heal`)
+- `scripts/Weapon.cs` — `Weapon` (Name, Range, Damage); built-ins `Pistol` (4/2) + `Rifle` (6/3)
+- `scripts/Item.cs` — `Item` (Name, HealValue); built-in `BioStim` (heal 6)
+- `scripts/Equipment.cs` — `Equipment` (Head, Body, Weapon) + `ToText()`
 - `scripts/TurnSystem.cs` — round-based initiative turn order (see below)
 - `dcyberpunkgam.csproj` / `dcyberpunkgam.sln` — .NET project (Godot.NET.Sdk 4.7.2, net8.0)
 - `run.sh` — builds the C# then launches the game with the Mono Godot binary (the command the user runs to play)
 - `tests/flow_test.gd` — headless SceneTree functional test (menu → level → 8-combatant initiative → rounds → movement range → BFS reachability → **camera panning + clamping** → **mouse click-to-move** → once-per-turn + UNDO → enemy auto-move + auto turn-end → back). ~52 checks.
 - `tests/cutscene_test.gd` — headless functional test (menu → SCENE TEST → reveal, speaker alternation, highlight, back)
 - `tests/resolution_test.gd` — headless test: menu RESOLUTION button cycles 1280x720 → 1600x900 → 1920x1080 → back
-- `tests/combat_test.gd` — headless combat test (HP = 5 + Con values, actions menu placement + name, shoot range in 8 directions, 2 damage, once-per-turn, WAIT, death removes token + skips turns). ~35 checks.
+- `tests/combat_test.gd` — headless combat test (equipment + random weapon assignment, shoot range in 8 directions, **weapon-based range/damage: pistol 4/2, rifle 6/3**, once-per-turn, WAIT, **enemy AI (shoot-in-range / step-toward-player)**, **BioStim heal**, death removes token + skips turns). ~61 checks.
 - `readme.me` — pre-existing file, untouched
 
 ## Cutscene (scene_test)
@@ -107,28 +110,47 @@ SCENE TEST button:
   `Key.None` clears — used to test panning headless where `Input.IsKeyPressed`
   is never true).
 
-## Combat (HP, Shoot, Wait, Actions Menu)
+## Combat (HP, Weapons, Shoot, Wait, Items, Actions Menu)
 - **Constitution + HP**: every combatant has `Constitution` (7–13) and
-  `HitPoints = 5 + Constitution` (see `Character.cs`). Party: Vex 11,
-  Kaito 9, Rook 12, Mira 8. Enemies: Gutter 10, Slick 13, Brute 12, Wisp 7.
-  HP readout floats above each token and updates on damage.
+  `HitPoints = 5 + Constitution` (`MaxHitPoints`; see `Character.cs`). Party:
+  Vex 11, Kaito 9, Rook 12, Mira 8. Enemies: Gutter 10, Slick 13, Brute 12,
+  Wisp 7. HP readout floats above each token and updates on damage.
 - **One action per turn** (`_actionUsed`): a party member picks exactly ONE of
-  SHOOT / MOVE / WAIT from the **actions menu** (bottom-left panel:
-  character name on top, SHOOT / MOVE / WAIT buttons; clamped to stay on
-  screen via `ClampActionMenu()`). Mode switching is free; performing the
-  action consumes it. UNDO re-arms the action.
-- **Shoot**: exactly 2 damage to an enemy standing exactly 4 squares away in
-  a straight line — horizontal, vertical, OR 45° diagonal (8 directions;
-  `IsShootTarget` + `ComputeShootTargets`). Valid targets highlight red in
-  shoot mode.
+  SHOOT / MOVE / WAIT / **BIOSTIM** from the **actions menu** (bottom-left
+  panel: character name on top, an equipment readout line, SHOOT / MOVE / WAIT
+  / BIOSTIM buttons; clamped to stay on screen via `ClampActionMenu()`). Mode
+  switching is free; performing the action consumes it. UNDO re-arms it.
+- **Weapons** (`Weapon.cs`): the equipped weapon drives the shoot mechanic —
+  targets must sit **exactly `Weapon.Range`** squares away along one of the 8
+  straight lines (h/v/45° diagonal) and a hit deals `Weapon.Damage`.
+  `Weapon.Pistol` (range 4, dmg 2) and `Weapon.Rifle` (range 6, dmg 3) are the
+  two built-in weapons. `IsShootCell` / `ComputeShootTargets` / `TryShootAt`
+  are all weapon-aware (range + damage come from the active combatant's
+  `Equipment.Weapon`).
+- **Equipment** (`Equipment.cs`): head + body + weapon. Basic gear for now —
+  Ballistic Cap (head) + Weave Vest (body) + a **random** Pistol or Rifle for
+  ALL 8 combatants (assigned in `AssignStartingGear()`). `Equipment.ToText()`
+  → "Rifle · Ballistic Cap · Weave Vest" (shown in the actions menu + HUD).
+- **Items** (`Item.cs`): consumables with a `HealValue`. `Item.BioStim`
+  (heal 6) — party members start with **2** (enemies 0). Using one heals up to
+  `MaxHitPoints` and consumes the action. `Character.UseItem` /
+  `GetItemCount`.
+- **Enemy AI** (`DoEnemyMove()`): each enemy turn, if any living party member
+  sits **exactly at weapon range** on a straight line from the enemy → shoot
+  them; else step 1 tile toward the **nearest** living party member (BFS
+  `DistanceToCell`; a party member's own token is a BFS wall so the distance
+  falls back to a neighbour +1). Then auto-end turn (guarded by `_enemyActed`).
 - **Death**: HP ≤ 0 → `IsDead`; the token is hidden from the map, no longer
   blocks movement (`IsOccupiedBy` skips the dead), and `TurnSystem.EndTurn`
   skips dead combatants when advancing (round wraps when everyone is dead).
 - Test hooks: `GetHitPoints(string)`, `IsAlive(string)`, `IsShootTarget(int,
   int)`, `SetActionMode(ActionMode)`, `SetTokenCell(string, int, int)`,
-  `GetActionMenuPos()`, `ForceCurrent(string)`. NOTE: set tokens' cells
-  BEFORE `ForceCurrent` — shoot targets/move range are computed from the
-  active token's position in `SetActive()`.
+  `GetActionMenuPos()`, `ForceCurrent(string)`, `GetWeaponName(string)`,
+  `GetWeaponRange(string)`, `SetWeapon(string, bool isRifle)`,
+  `GetItemCount(string)`, `UseItem(string)`, `GetEquipment(string)`.
+  NOTE: set tokens' cells BEFORE `ForceCurrent` — shoot targets/move range are
+  computed from the active token's position in `SetActive()`. Tests pin
+  weapons with `SetWeapon` (and `SetInitiativeRolls`) for determinism.
 
 ## Resolution selector (MainMenu)
 `MainMenu` has a **RESOLUTION** button that cycles the window through three
@@ -174,7 +196,7 @@ $GODOT --headless --path . --import                    # clean import check
 $GODOT --headless --path . --quit-after 120            # smoke run (main scene = menu)
 $GODOT --headless --path . -s res://tests/flow_test.gd      # functional flow test (52 checks)
 $GODOT --headless --path . -s res://tests/cutscene_test.gd  # cutscene test (14 checks)
-$GODOT --headless --path . -s res://tests/combat_test.gd    # combat: HP/shoot/death/actions menu (35 checks)
+$GODOT --headless --path . -s res://tests/combat_test.gd    # combat: weapons/items/enemy AI/shoot/death/actions menu (61 checks)
 ```
 Headless alone is NOT enough for UI: it never renders, so off-screen controls
 are invisible to it. There's a real Xorg at `DISPLAY=:0.0` (no Xvfb/xdotool here).

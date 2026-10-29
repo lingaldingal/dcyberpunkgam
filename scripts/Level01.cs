@@ -14,7 +14,18 @@ namespace Dcyberpunkgam;
 /// tiles (5 + Agility/2, floored). Clicking any reachable tile moves the
 /// combatant there along the shortest path that avoids obstacles and other
 /// tokens (BFS). Character movement is mouse-only; WASD instead pans the
-/// camera. Enemies auto-move one tile in a random direction on their turn.
+/// camera.
+///
+/// Weapons + items: every combatant starts equipped with basic head/body gear
+/// and a randomly rolled pistol (range 4, 2 dmg) or rifle (range 6, 3 dmg).
+/// Shooting hits only a target sitting exactly the weapon's range away along
+/// one of the 8 straight lines, for the weapon's damage. Party members also
+/// start with BioStims (heal items); using one consumes the turn's action.
+///
+/// Enemy AI: on its turn an enemy shoots a party member that sits exactly at
+/// its weapon's range on a straight line (first match); otherwise it steps one
+/// tile along the BFS path toward the nearest living party member, then ends
+/// its turn.
 ///
 /// Camera: the board is a plain Control that can be far larger than the window
 /// (levels are up to 2000x2000 grids). <see cref="_cameraPos"/> is the top-left
@@ -29,19 +40,27 @@ public partial class Level01 : Control
     // One board tile per frame of WASD panning.
     private const int CameraPanSpeed = TileSize;
 
-    // Frames an enemy waits before acting, so its move is visible.
+    // Frames an enemy waits before acting, so its action is visible.
     private const int EnemyThinkFrames = 12;
 
-    // Shoot: target must be exactly this many squares away along one of the
-    // 8 straight lines (horizontal, vertical or diagonal), and deals 2 damage.
-    private const int ShootRange = 4;
-    private const int ShootDamage = 2;
+    // Basic gear everyone starts with; the weapon is rolled per combatant
+    // (pistol or rifle) — see AssignStartingGear.
+    private const string HeadGear = "Ballistic Cap";
+    private const string BodyGear = "Weave Vest";
+    private const int PartyBioStims = 2;
 
     public enum ActionMode { Move, Shoot }
 
     private static readonly Vector2I[] Dirs =
     {
         new(1, 0), new(-1, 0), new(0, 1), new(0, -1),
+    };
+
+    // The 8 straight-line shooting directions (horizontal, vertical, diagonal).
+    private static readonly Vector2I[] LineDirs =
+    {
+        new(1, 0), new(-1, 0), new(0, 1), new(0, -1),
+        new(1, 1), new(-1, 1), new(1, -1), new(-1, -1),
     };
 
     // 1 = walkable, 0 = obstacle (placeholder layout, 12 rows x 20 cols).
@@ -103,12 +122,15 @@ public partial class Level01 : Control
     private bool _actionUsed;
 
     // The actions menu: a rectangular panel pinned to the bottom-left with the
-    // active character's name on top and the Shoot / Move / Wait buttons below.
+    // active character's name + equipment on top and the Shoot / Move / Wait /
+    // BioStim buttons below.
     private PanelContainer _actionMenu = null!;
     private Label _actionMenuName = null!;
+    private Label _actionMenuEquip = null!;
     private Button _shootButton = null!;
     private Button _moveButton = null!;
     private Button _waitButton = null!;
+    private Button _healButton = null!;
 
     // Enemy auto-move: armed when an enemy is active; fires after a short delay.
     private bool _enemyMoveArmed;
@@ -143,6 +165,7 @@ public partial class Level01 : Control
             "Center/Panel/HUD", "Center/Panel/HUD/Turn", "Center/Panel/HUD/Info",
         })
             GetNode<Control>(name).MouseFilter = MouseFilterEnum.Ignore;
+        AssignStartingGear();
         BuildBoard();
         BuildActionMenu();
         InitializeCamera();
@@ -432,6 +455,106 @@ public partial class Level01 : Control
         return -1;
     }
 
+    // --- Equipment + items -------------------------------------------------
+
+    // Give every combatant basic head/body gear and a randomly rolled weapon
+    // (50/50 pistol or rifle). Party members also start with BioStims.
+    private void AssignStartingGear()
+    {
+        for (int i = 0; i < Roster.Length; i++)
+        {
+            var c = Roster[i];
+            var weapon = _rng.Next(2) == 0 ? Weapon.Pistol : Weapon.Rifle;
+            c.Equipment = new Equipment(HeadGear, BodyGear, weapon);
+            if (!c.IsEnemy)
+                c.Items[Item.BioStim] = PartyBioStims;
+        }
+    }
+
+    /// <summary>The named combatant's equipped weapon name ("" if unknown).</summary>
+    public string GetWeaponName(string name)
+    {
+        int index = IndexOf(name);
+        return index < 0 ? "" : Roster[index].Equipment.Weapon.Name;
+    }
+
+    /// <summary>The named combatant's weapon range in squares.</summary>
+    public int GetWeaponRange(string name)
+    {
+        int index = IndexOf(name);
+        return index < 0 ? 0 : Roster[index].Equipment.Weapon.Range;
+    }
+
+    /// <summary>The named combatant's weapon damage per hit.</summary>
+    public int GetWeaponDamage(string name)
+    {
+        int index = IndexOf(name);
+        return index < 0 ? 0 : Roster[index].Equipment.Weapon.Damage;
+    }
+
+    /// <summary>Test hook: swap a combatant's weapon (recomputes if they are active).</summary>
+    public void SetWeapon(string name, bool rifle)
+    {
+        int index = IndexOf(name);
+        if (index < 0)
+            return;
+        Roster[index].Equipment = new Equipment(HeadGear, BodyGear, rifle ? Weapon.Rifle : Weapon.Pistol);
+        if (index == _turns.CurrentIndex)
+        {
+            ComputeShootTargets();
+            RefreshHighlights();
+        }
+        UpdateActionMenu();
+    }
+
+    /// <summary>Test hook: a combatant's equipped head/body gear text.</summary>
+    public string GetEquipment(string name)
+    {
+        int index = IndexOf(name);
+        return index < 0 ? "" : Roster[index].Equipment.ToText();
+    }
+
+    /// <summary>How many BioStims the named combatant is carrying.</summary>
+    public int GetItemCount(string name)
+    {
+        int index = IndexOf(name);
+        return index < 0 ? 0 : Roster[index].GetItemCount(Item.BioStim);
+    }
+
+    /// <summary>
+    /// Test hook: use one BioStim for the named combatant (heal + decrement),
+    /// regardless of whose turn it is. Returns false if none were available.
+    /// </summary>
+    public bool UseItem(string name)
+    {
+        int index = IndexOf(name);
+        if (index < 0)
+            return false;
+        var c = Roster[index];
+        if (c.UseItem(Item.BioStim))
+        {
+            RefreshTokenHp(index);
+            UpdateActionMenu();
+            return true;
+        }
+        return false;
+    }
+
+    // The active party member spends its action using a BioStim (if it has one
+    // and is below full HP).
+    private void OnHealPressed()
+    {
+        if (!_turnActive || _turns.Current.IsEnemy || _actionUsed)
+            return;
+        var c = _turns.Current;
+        if (c.UseItem(Item.BioStim))
+        {
+            _infoLabel.Text = $"{c.Name} uses a BioStim and recovers {Item.BioStim.HealValue} HP ({c.HitPoints} HP)";
+            RefreshTokenHp(_turns.CurrentIndex);
+            MarkActionUsed();
+        }
+    }
+
     // --- Turn / movement --------------------------------------------------
 
     private void SetActive()
@@ -464,7 +587,7 @@ public partial class Level01 : Control
             parts.Add($"{c.Name} {c.Agility}+{_turns.Roll[i]}{(c.IsEnemy ? " (E)" : "")}");
         }
         return string.Join(" · ", parts)
-            + "  —  initiative d5 + Agility sets order (high first) · move = 5 + Agi/2 · one action per turn (SHOOT / MOVE / WAIT) · shoot = 2 dmg, 4 squares in a straight line · HP = 5 + Con · WASD pans the map · END TURN";
+            + "  —  initiative d5 + Agility sets order (high first) · move = 5 + Agi/2 · one action per turn (SHOOT / MOVE / WAIT / BioStim) · shoot = weapon range (pistol 4 / rifle 6) straight line, weapon dmg (2 / 3) · HP = 5 + Con · WASD pans the map · END TURN";
     }
 
     // BFS: shortest-path distance from <start> to every reachable tile, treating
@@ -498,6 +621,23 @@ public partial class Level01 : Control
         return dist;
     }
 
+    // Distance from <start> to <cell> in a BFS map where <cell> may itself be
+    // a "wall" (a token's own cell, e.g. a party member the enemy targets).
+    // Falls back to a neighbour's distance + 1, or int.MaxValue if unreachable.
+    private static int DistanceToCell(Dictionary<Vector2I, int> dist, Vector2I cell)
+    {
+        if (dist.TryGetValue(cell, out int d))
+            return d;
+        int best = int.MaxValue;
+        foreach (var dir in Dirs)
+        {
+            var n = cell + dir;
+            if (dist.TryGetValue(n, out int dn) && dn + 1 < best)
+                best = dn + 1;
+        }
+        return best;
+    }
+
     private void MoveTo(Vector2I next)
     {
         if (!_reachable.ContainsKey(next))
@@ -515,8 +655,9 @@ public partial class Level01 : Control
             MoveTo(cell);
     }
 
-    // Shoot: the target must sit exactly ShootRange squares away along one of
-    // the 8 straight lines (horizontal, vertical, diagonal). Deals 2 damage.
+    // Shoot: the target must sit exactly the active combatant's weapon range
+    // squares away along one of the 8 straight lines (horizontal, vertical,
+    // diagonal). Deals the weapon's damage.
     private void TryShootAt(Vector2I cell)
     {
         if (!_shootTargets.Contains(cell))
@@ -535,12 +676,23 @@ public partial class Level01 : Control
         var target = _turns.Combatants[targetIndex];
         if (target.IsDead)
             return;
-        target.HitPoints -= ShootDamage;
-        _infoLabel.Text = $"{_turns.Current.Name} shoots {target.Name} for {ShootDamage} ({target.HitPoints} HP left)";
+        ApplyShot(_turns.CurrentIndex, targetIndex);
+        MarkActionUsed();
+    }
+
+    // Common shot application: weapon damage on the target, HUD line, token
+    // HP update, death removal. Shared by the party's shoot action and the
+    // enemy AI.
+    private void ApplyShot(int shooterIndex, int targetIndex)
+    {
+        var shooter = _turns.Combatants[shooterIndex];
+        var target = _turns.Combatants[targetIndex];
+        int damage = shooter.Equipment.Weapon.Damage;
+        target.HitPoints -= damage;
+        _infoLabel.Text = $"{shooter.Name} shoots {target.Name} with the {shooter.Equipment.Weapon.Name} for {damage} ({target.HitPoints} HP left)";
         RefreshTokenHp(targetIndex);
         if (target.IsDead)
             KillToken(targetIndex);
-        MarkActionUsed();
     }
 
     // One action per turn: once the active combatant has moved, shot or waited,
@@ -592,31 +744,96 @@ public partial class Level01 : Control
         _movedThisTurn = true;
     }
 
-    /// <summary>Test hook: act for the active enemy now (move + end turn).</summary>
+    /// <summary>Test hook: act for the active enemy now (AI move/shoot + end turn).</summary>
     public void ForceEnemyMove() => DoEnemyMove();
 
-    // Enemy auto-move: step one tile in a random free direction, then end
-    // the enemy's turn (enemies have no other actions yet). Guarded so it
-    // fires exactly once per turn.
+    // Basic enemy AI: if a living party member sits exactly at the enemy's
+    // weapon range on a straight line, shoot the first such target. Otherwise
+    // step one tile along the shortest path (BFS) toward the nearest living
+    // party member. Then end the enemy's turn. Guarded so it fires exactly
+    // once per turn.
     private void DoEnemyMove()
     {
         if (_enemyActed)
             return;
         _enemyActed = true;
         int index = _turns.CurrentIndex;
+        var enemy = _turns.Combatants[index];
         var from = CurrentCell();
-        var options = new List<Vector2I>();
-        foreach (var dir in Dirs)
+
+        // Nearest living party member (BFS distance from the enemy). A party
+        // member's own token cell is a BFS "wall", so DistanceToCell also
+        // accepts a cell whose neighbour is in the map (distance = 1 more).
+        var dist = ComputeDistances(from, int.MaxValue, index);
+        int targetIndex = -1;
+        int best = int.MaxValue;
+        for (int i = 0; i < _turns.Combatants.Count; i++)
         {
-            var next = from + dir;
-            if (next.X < 0 || next.X >= GridWidth || next.Y < 0 || next.Y >= GridHeight)
+            var c = _turns.Combatants[i];
+            if (c.IsEnemy || c.IsDead)
                 continue;
-            if (Walkable[next.Y, next.X] != 1 || IsOccupiedBy(next, index))
-                continue;
-            options.Add(next);
+            var cell = (Vector2I)(_tokens[i].Position / TileSize);
+            int d = DistanceToCell(dist, cell);
+            if (d < best)
+            {
+                best = d;
+                targetIndex = i;
+            }
         }
-        if (options.Count > 0)
-            MoveTokenTo(index, options[_rng.Next(options.Count)]);
+        if (targetIndex < 0)
+        {
+            // No party member reachable (or all dead): just end the turn.
+            _turns.EndTurn();
+            SetActive();
+            return;
+        }
+
+        int range = enemy.Equipment.Weapon.Range;
+        bool shot = false;
+
+        // Shoot any party member exactly at weapon range on a straight line.
+        for (int i = 0; i < _turns.Combatants.Count; i++)
+        {
+            var c = _turns.Combatants[i];
+            if (c.IsEnemy || c.IsDead)
+                continue;
+            var cell = (Vector2I)(_tokens[i].Position / TileSize);
+            if (IsShootCell(from, cell, range))
+            {
+                ApplyShot(index, i);
+                shot = true;
+                break;
+            }
+        }
+
+        if (!shot)
+        {
+            // Step one tile toward the target: BFS from the target's cell,
+            // then take an adjacent cell with the lowest distance.
+            var targetCell = (Vector2I)(_tokens[targetIndex].Position / TileSize);
+            // Full-range BFS (the enemy may be farther than its own move range
+            // from the target); we only need the distance values near the enemy.
+            var toward = ComputeDistances(targetCell, int.MaxValue, targetIndex);
+            Vector2I? step = null;
+            int bestStep = int.MaxValue;
+            foreach (var dir in Dirs)
+            {
+                var next = from + dir;
+                if (next.X < 0 || next.X >= GridWidth || next.Y < 0 || next.Y >= GridHeight)
+                    continue;
+                if (Walkable[next.Y, next.X] != 1 || IsOccupiedBy(next, index))
+                    continue;
+                if (!toward.TryGetValue(next, out int d))
+                    continue;
+                if (d < bestStep)
+                {
+                    bestStep = d;
+                    step = next;
+                }
+            }
+            if (step != null && step.Value != from)
+                MoveTokenTo(index, step.Value);
+        }
         // Enemy has acted: advance to the next combatant.
         _turns.EndTurn();
         SetActive();
@@ -643,31 +860,32 @@ public partial class Level01 : Control
         return false;
     }
 
-    // A combatant is a shoot target iff it is alive and sits exactly
-    // ShootRange squares away from <from> along one of the 8 straight lines
+    // <to> is a shoot position for a weapon of <range> iff it sits exactly
+    // <range> squares away from <from> along one of the 8 straight lines
     // (horizontal, vertical, diagonal).
-    private bool IsShootTarget(Vector2I from, Vector2I to)
+    private static bool IsShootCell(Vector2I from, Vector2I to, int range)
     {
         int dx = to.X - from.X;
         int dy = to.Y - from.Y;
-        return (Math.Abs(dx) == ShootRange && dy == 0)
-            || (Math.Abs(dy) == ShootRange && dx == 0)
-            || (Math.Abs(dx) == ShootRange && Math.Abs(dy) == ShootRange);
+        return (Math.Abs(dx) == range && dy == 0)
+            || (Math.Abs(dy) == range && dx == 0)
+            || (Math.Abs(dx) == range && Math.Abs(dy) == range);
     }
 
-    // Rebuild the shoot-target set for the active combatant.
+    // Rebuild the shoot-target set for the active combatant (its weapon range).
     private void ComputeShootTargets()
     {
         _shootTargets.Clear();
         if (_turns.Combatants[_turns.CurrentIndex].IsEnemy)
             return;
+        int range = _turns.Combatants[_turns.CurrentIndex].Equipment.Weapon.Range;
         var from = CurrentCell();
         for (int x = 0; x < GridWidth; x++)
         {
             for (int y = 0; y < GridHeight; y++)
             {
                 var cell = new Vector2I(x, y);
-                if (IsShootTarget(from, cell))
+                if (IsShootCell(from, cell, range))
                     _shootTargets.Add(cell);
             }
         }
@@ -837,17 +1055,30 @@ public partial class Level01 : Control
         _actionMenuName.Modulate = new Color(0.85f, 0.92f, 1f);
         _actionMenuName.AddThemeFontSizeOverride("font_size", 18);
         vbox.AddChild(_actionMenuName);
+        // Equipped gear readout (weapon · head · body), under the name.
+        _actionMenuEquip = new Label
+        {
+            Name = "Equipment",
+            Text = "…",
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        _actionMenuEquip.Modulate = new Color(0.65f, 0.75f, 0.9f);
+        _actionMenuEquip.AddThemeFontSizeOverride("font_size", 12);
+        vbox.AddChild(_actionMenuEquip);
         var actions = new HBoxContainer { Name = "Actions" };
         actions.AddThemeConstantOverride("separation", 8);
         _shootButton = new Button { Name = "Shoot", Text = "SHOOT", CustomMinimumSize = new Vector2(84, 34) };
         _moveButton = new Button { Name = "Move", Text = "MOVE", CustomMinimumSize = new Vector2(84, 34) };
         _waitButton = new Button { Name = "Wait", Text = "WAIT", CustomMinimumSize = new Vector2(84, 34) };
+        _healButton = new Button { Name = "Heal", CustomMinimumSize = new Vector2(96, 34) };
         _shootButton.Pressed += OnShootModePressed;
         _moveButton.Pressed += OnMoveModePressed;
         _waitButton.Pressed += OnWaitPressed;
+        _healButton.Pressed += OnHealPressed;
         actions.AddChild(_shootButton);
         actions.AddChild(_moveButton);
         actions.AddChild(_waitButton);
+        actions.AddChild(_healButton);
         vbox.AddChild(actions);
         _actionMenu.AddChild(vbox);
         AddChild(_actionMenu);
@@ -857,10 +1088,16 @@ public partial class Level01 : Control
     {
         if (_actionMenuName == null)
             return;
-        _actionMenuName.Text = _turns.Current.Name;
-        _shootButton.Disabled = _actionUsed || _turns.Current.IsEnemy;
-        _moveButton.Disabled = _actionUsed || _turns.Current.IsEnemy;
-        _waitButton.Disabled = _actionUsed || _turns.Current.IsEnemy;
+        var current = _turns.Current;
+        _actionMenuName.Text = current.Name;
+        _actionMenuEquip.Text = current.Equipment.ToText();
+        int stims = current.GetItemCount(Item.BioStim);
+        _healButton.Text = $"BIOSTIM x{stims}";
+        bool busy = _actionUsed || current.IsEnemy;
+        _shootButton.Disabled = busy;
+        _moveButton.Disabled = busy;
+        _waitButton.Disabled = busy;
+        _healButton.Disabled = busy || stims <= 0 || current.HitPoints >= current.MaxHitPoints;
         _shootButton.Modulate = _actionMode == ActionMode.Shoot ? Colors.White : new Color(1, 1, 1, 0.55f);
         _moveButton.Modulate = _actionMode == ActionMode.Move ? Colors.White : new Color(1, 1, 1, 0.55f);
     }
