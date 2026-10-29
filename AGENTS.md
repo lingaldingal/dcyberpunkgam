@@ -93,9 +93,9 @@ SCENE TEST button:
   pinned to the origin) and sets `Board.Position = -camera`. The board's
   children keep board-local coords; only the board node moves. The info
   panel is constrained (800px + autowrap) so long text never overflows.
-- **Enemies act** (shoot and/or move, see the Combat section's "Enemy AI")
-  after a short delay (12 frames) in `_Process`, then **automatically end
-  their turn**. Guarded by `_enemyActed` so the turn ends exactly once.
+- **Enemies act** (move first, then shoot, see the Combat section's "Enemy
+  AI") after a short delay (12 frames) in `_Process`, then **automatically
+  end their turn**. Guarded by `_enemyActed` so the turn ends exactly once.
   `OnBoardGuiInput` bails when `_turns.Current.IsEnemy` (no mouse control of
   enemies).
 - Map is 28 cols × 16 rows, 71 obstacles (rows y=0..2 are a fully clear band;
@@ -153,14 +153,16 @@ SCENE TEST button:
   `CornerBlocked` bounds-checks corners past the grid edge). `ComputeShootTargets`
   walks each of the 8 lines from the CURRENT position and adds EVERY cell up to
   `range` away with a clear line (a weapon hits at any distance 1..range).
-- **Enemy AI** (`DoEnemyMove()`), same rules as the player: each enemy turn it
-  first tries to **shoot** — `ShootAtRange` fires at the first living party
-  member within weapon range on a clear line of sight; if none, it spends its one
-  **move** via `MoveToward`, walking its FULL movement range along the BFS
-  path toward the **nearest** living party member (the enemy is the BFS moving
-  token so its own cell is mapped; the target's token is a wall, so it stops
-  when adjacent/boxed), then re-checks range and shoots again if the walk put
-  a party member in range. Auto-end turn (guarded by `_enemyActed`).
+- **Enemy AI** (`EnemyAct()`), same rules as the player: each enemy turn it
+  spends its one **move** via `EnemyMoveToward`, walking its FULL movement
+  range along the BFS path toward the **nearest** living party member (the
+  enemy is the BFS moving token so its own cell is mapped; the target's token
+  is a wall, so it stops when adjacent/boxed), then spends its one **action**
+  via `EnemyShoot` — from the new position it fires at that target if it is
+  within weapon range on a straight line with a clear line of sight. The move
+  and shot latch `_movedThisTurn` / `_actionUsed` exactly like the player's
+  actions, so the actions menu reflects the spent budgets. Auto-end turn
+  (guarded by `_enemyActed`). `FindNearestPartyMember` picks the target.
 - **Death**: HP ≤ 0 → `IsDead`; the token is hidden from the map, no longer
   blocks movement (`IsOccupiedBy` skips the dead), and `TurnSystem.EndTurn`
   skips dead combatants when advancing (round wraps when everyone is dead).
