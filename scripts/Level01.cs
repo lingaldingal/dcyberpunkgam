@@ -11,21 +11,28 @@ namespace Dcyberpunkgam;
 /// The order is rolled once and persists for the rest of the encounter.
 ///
 /// Movement: the active combatant may move up to <see cref="Character.MovementRange"/>
-/// tiles (5 + Agility/2, floored). Clicking any reachable tile moves the
-/// combatant there along the shortest path that avoids obstacles and other
-/// tokens (BFS). Character movement is mouse-only; WASD instead pans the
-/// camera.
+/// tiles (5 + Agility/2, floored) once per turn. Clicking any reachable tile
+/// moves the combatant there along the shortest path that avoids obstacles
+/// and other tokens (BFS). Character movement is mouse-only; WASD instead
+/// pans the camera.
 ///
 /// Weapons + items: every combatant starts equipped with basic head/body gear
 /// and a randomly rolled pistol (range 4, 2 dmg) or rifle (range 6, 3 dmg).
 /// Shooting hits only a target sitting exactly the weapon's range away along
-/// one of the 8 straight lines, for the weapon's damage. Party members also
-/// start with BioStims (heal items); using one consumes the turn's action.
+/// one of the 8 straight lines with a clear line of sight (no obstacle on the
+/// line; diagonals cannot cut a wall corner), for the weapon's damage. Party
+/// members also start with BioStims (heal items).
 ///
-/// Enemy AI: on its turn an enemy shoots a party member that sits exactly at
-/// its weapon's range on a straight line (first match); otherwise it steps one
-/// tile along the BFS path toward the nearest living party member, then ends
-/// its turn.
+/// Actions: per turn each combatant has ONE action (SHOOT / WAIT / item) and
+/// ONE move. Mode switching (SHOOT <-> MOVE) is free; using either budget
+/// latches it until END TURN (UNDO restores the turn-start cell and re-arms
+/// everything).
+///
+/// Enemy AI: enemies follow the same rules as the player — on its turn an
+/// enemy shoots a party member with clear line of sight at weapon range if
+/// one exists; otherwise it moves up to its full movement range along the BFS
+/// path toward the nearest living party member, then shoots again if it
+/// ended up in range.
 ///
 /// Camera: the board is a plain Control that can be far larger than the window
 /// (levels are up to 2000x2000 grids). <see cref="_cameraPos"/> is the top-left
@@ -34,8 +41,8 @@ namespace Dcyberpunkgam;
 /// </summary>
 public partial class Level01 : Control
 {
-    private const int GridWidth = 20;
-    private const int GridHeight = 12;
+    private const int GridWidth = 28;
+    private const int GridHeight = 16;
     private const int TileSize = 48;
     // One board tile per frame of WASD panning.
     private const int CameraPanSpeed = TileSize;
@@ -63,21 +70,37 @@ public partial class Level01 : Control
         new(1, 1), new(-1, 1), new(1, -1), new(-1, -1),
     };
 
-    // 1 = walkable, 0 = obstacle (placeholder layout, 12 rows x 20 cols).
+    // 1 = walkable, 0 = obstacle (16 rows x 28 cols).
+    //
+    // Layout notes (also relied on by the tests):
+    // - Rows y=0..2 are completely clear, so a token can shoot straight
+    //   east/west (and on the diagonals from those rows) without any wall in
+    //   the way.
+    // - The x=0 column is a clear, obstacle-free vertical lane (y=0..15) — a
+    //   long open detour along the west edge.
+    // - The x=6 column is clear from y=4..11 (walls at y=0..3 and y=12..15),
+    //   and row y=10 is clear from x=3..11 (walls at x=2 and x=12). These two
+    //   form a cross whose arms sit exactly at pistol/rifle range from the
+    //   open ground around them, so line-of-sight (no shooting through
+    //   obstacles) is easy to see and to test.
     private static readonly int[,] Walkable =
     {
-        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
-        { 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1 },
-        { 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1 },
-        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1 },
-        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1 },
-        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1 },
-        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1 },
-        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
-        { 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1 },
-        { 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1 },
-        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
-        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
     };
 
     // Roster: party (0-3) then enemies (4-7). Token index == roster index.
@@ -97,7 +120,7 @@ public partial class Level01 : Control
     private static readonly (int X, int Y)[] StartCells =
     {
         (1, 1), (2, 1), (1, 2), (2, 2),          // party (left)
-        (17, 1), (18, 1), (17, 2), (18, 2),      // enemies (right)
+        (26, 1), (25, 1), (26, 2), (25, 2),      // enemies (right)
     };
 
     private readonly List<Control> _tokens = new();
@@ -111,13 +134,11 @@ public partial class Level01 : Control
     private Dictionary<Vector2I, int> _reachable = new();
     private HashSet<Vector2I> _shootTargets = new();
 
-    // A party member may move once per turn; UNDO (before END TURN) re-arms.
+    // Per-turn budget: ONE action (shoot / wait / item) and ONE move. Mode
+    // switching is free; using either budget latches it until END TURN.
+    // UNDO (before END TURN) restores the turn-start cell and re-arms both.
     private bool _movedThisTurn;
     private Vector2I _turnStartCell;
-
-    // One action per turn: move, shoot, or wait. <see cref="_actionMode"/> is
-    // which board-click mode is active; <see cref="_actionUsed"/> latches once
-    // the combatant has acted this turn.
     private ActionMode _actionMode = ActionMode.Move;
     private bool _actionUsed;
 
@@ -300,7 +321,9 @@ public partial class Level01 : Control
 
     private void OnBoardGuiInput(InputEvent @event)
     {
-        if (!_turnActive || _turns.Current.IsEnemy || _actionUsed)
+        // Each party turn allows ONE action (shoot) and ONE move; each path
+        // latches itself (see MoveTo / TryShootAt).
+        if (!_turnActive || _turns.Current.IsEnemy)
             return;
         if (@event is InputEventMouseButton mouse && mouse.Pressed && mouse.ButtonIndex == MouseButton.Left)
             TryBoardClick(mouse.Position);
@@ -587,7 +610,7 @@ public partial class Level01 : Control
             parts.Add($"{c.Name} {c.Agility}+{_turns.Roll[i]}{(c.IsEnemy ? " (E)" : "")}");
         }
         return string.Join(" · ", parts)
-            + "  —  initiative d5 + Agility sets order (high first) · move = 5 + Agi/2 · one action per turn (SHOOT / MOVE / WAIT / BioStim) · shoot = weapon range (pistol 4 / rifle 6) straight line, weapon dmg (2 / 3) · HP = 5 + Con · WASD pans the map · END TURN";
+            + "  —  initiative d5 + Agility sets order (high first) · move = 5 + Agi/2 · per turn: ONE action (SHOOT / WAIT / BioStim) + ONE move · shoot = weapon range (pistol 4 / rifle 6) straight line, clear line of sight, weapon dmg (2 / 3) · HP = 5 + Con · WASD pans the map · END TURN";
     }
 
     // BFS: shortest-path distance from <start> to every reachable tile, treating
@@ -640,10 +663,9 @@ public partial class Level01 : Control
 
     private void MoveTo(Vector2I next)
     {
-        if (!_reachable.ContainsKey(next))
+        if (_movedThisTurn || !_reachable.ContainsKey(next))
             return;
         MovePartyTo(next);
-        MarkActionUsed();
     }
 
     private void TryBoardClick(Vector2 localPos)
@@ -660,7 +682,7 @@ public partial class Level01 : Control
     // diagonal). Deals the weapon's damage.
     private void TryShootAt(Vector2I cell)
     {
-        if (!_shootTargets.Contains(cell))
+        if (_actionUsed || !_shootTargets.Contains(cell))
             return;
         int targetIndex = -1;
         for (int i = 0; i < _tokens.Count; i++)
@@ -715,12 +737,11 @@ public partial class Level01 : Control
     private void OnShootModePressed() => SetActionMode(ActionMode.Shoot);
     private void OnMoveModePressed() => SetActionMode(ActionMode.Move);
 
-    // Switch the board-click mode. Re-arms the action so the combatant can act
-    // in the new mode (mode switching itself does not consume the action).
+    // Switch the board-click mode. Mode switching is free: it does not
+    // consume or re-arm either of the turn's budgets (one action + one move).
     public void SetActionMode(ActionMode mode)
     {
         _actionMode = mode;
-        _actionUsed = false;
         UpdateActionMenu();
         RefreshHighlights();
     }
@@ -738,8 +759,6 @@ public partial class Level01 : Control
     // remain valid for the rest of the turn.
     private void MovePartyTo(Vector2I next)
     {
-        if (_movedThisTurn)
-            return;
         _tokens[_turns.CurrentIndex].Position = new Vector2(next.X * TileSize, next.Y * TileSize);
         _movedThisTurn = true;
     }
@@ -747,11 +766,12 @@ public partial class Level01 : Control
     /// <summary>Test hook: act for the active enemy now (AI move/shoot + end turn).</summary>
     public void ForceEnemyMove() => DoEnemyMove();
 
-    // Basic enemy AI: if a living party member sits exactly at the enemy's
-    // weapon range on a straight line, shoot the first such target. Otherwise
-    // step one tile along the shortest path (BFS) toward the nearest living
-    // party member. Then end the enemy's turn. Guarded so it fires exactly
-    // once per turn.
+    // Enemy AI (same rules as the player: one action + one move per turn):
+    // if a living party member has clear line of sight at the enemy's weapon
+    // range, shoot it. Otherwise move up to the enemy's full movement range
+    // along the BFS path toward the nearest living party member, then shoot
+    // again if the enemy ended up in range. Then end its turn. Guarded so it
+    // fires exactly once per turn.
     private void DoEnemyMove()
     {
         if (_enemyActed)
@@ -759,12 +779,12 @@ public partial class Level01 : Control
         _enemyActed = true;
         int index = _turns.CurrentIndex;
         var enemy = _turns.Combatants[index];
-        var from = CurrentCell();
+        int weaponRange = enemy.Equipment.Weapon.Range;
 
         // Nearest living party member (BFS distance from the enemy). A party
         // member's own token cell is a BFS "wall", so DistanceToCell also
         // accepts a cell whose neighbour is in the map (distance = 1 more).
-        var dist = ComputeDistances(from, int.MaxValue, index);
+        var dist = ComputeDistances(CurrentCell(), int.MaxValue, index);
         int targetIndex = -1;
         int best = int.MaxValue;
         for (int i = 0; i < _turns.Combatants.Count; i++)
@@ -788,37 +808,64 @@ public partial class Level01 : Control
             return;
         }
 
-        int range = enemy.Equipment.Weapon.Range;
-        bool shot = false;
+        if (!ShootAtRange(index, weaponRange))
+        {
+            // No shot available: spend the move toward the target, then check
+            // the range again from the new position.
+            MoveToward(index, targetIndex);
+            ShootAtRange(index, weaponRange);
+        }
+        // Enemy has acted: advance to the next combatant.
+        _turns.EndTurn();
+        SetActive();
+    }
 
-        // Shoot any party member exactly at weapon range on a straight line.
+    // The enemy shoots the first living party member that sits at its weapon
+    // range on a straight line with a clear line of sight. Returns true if a
+    // shot was fired (the enemy's action is consumed).
+    private bool ShootAtRange(int index, int weaponRange)
+    {
+        var from = CurrentCell();
         for (int i = 0; i < _turns.Combatants.Count; i++)
         {
             var c = _turns.Combatants[i];
             if (c.IsEnemy || c.IsDead)
                 continue;
             var cell = (Vector2I)(_tokens[i].Position / TileSize);
-            if (IsShootCell(from, cell, range))
+            if (IsShootCell(from, cell, weaponRange) && HasLineOfSight(from, cell, weaponRange))
             {
                 ApplyShot(index, i);
-                shot = true;
-                break;
+                return true;
             }
         }
+        return false;
+    }
 
-        if (!shot)
+    // The enemy spends its one move for the turn: it walks along the BFS path
+    // toward <targetIndex>, up to its full movement range (or until it is
+    // adjacent to the target, which is a token and so a BFS "wall").
+    private void MoveToward(int index, int targetIndex)
+    {
+        var enemy = _turns.Combatants[index];
+        int steps = enemy.MovementRange;
+        var pos = CurrentCell();
+        while (steps-- > 0)
         {
-            // Step one tile toward the target: BFS from the target's cell,
-            // then take an adjacent cell with the lowest distance.
-            var targetCell = (Vector2I)(_tokens[targetIndex].Position / TileSize);
-            // Full-range BFS (the enemy may be farther than its own move range
-            // from the target); we only need the distance values near the enemy.
-            var toward = ComputeDistances(targetCell, int.MaxValue, targetIndex);
+            // BFS from the target treating the ENEMY as the moving token, so
+            // the enemy's own cell is in the map (its distance = how far it
+            // still is). The target's token is a wall, so once adjacent no
+            // neighbour can get any closer.
+            var toward = ComputeDistances(
+                (Vector2I)(_tokens[targetIndex].Position / TileSize), int.MaxValue, index);
+            if (!toward.TryGetValue(pos, out int curD))
+                break; // boxed in by obstacles
+            if (curD <= 1)
+                break; // adjacent to the target: its cell is the wall
             Vector2I? step = null;
             int bestStep = int.MaxValue;
             foreach (var dir in Dirs)
             {
-                var next = from + dir;
+                var next = pos + dir;
                 if (next.X < 0 || next.X >= GridWidth || next.Y < 0 || next.Y >= GridHeight)
                     continue;
                 if (Walkable[next.Y, next.X] != 1 || IsOccupiedBy(next, index))
@@ -831,12 +878,12 @@ public partial class Level01 : Control
                     step = next;
                 }
             }
-            if (step != null && step.Value != from)
-                MoveTokenTo(index, step.Value);
+            if (step == null || bestStep >= curD)
+                break; // no neighbour is any closer: stop (adjacent or boxed)
+            pos = step.Value;
         }
-        // Enemy has acted: advance to the next combatant.
-        _turns.EndTurn();
-        SetActive();
+        if (pos != CurrentCell())
+            MoveTokenTo(index, pos);
     }
 
     private Vector2I CurrentCell()
@@ -872,7 +919,31 @@ public partial class Level01 : Control
             || (Math.Abs(dx) == range && Math.Abs(dy) == range);
     }
 
-    // Rebuild the shoot-target set for the active combatant (its weapon range).
+    // Clear line of sight from <from> to <to> (which sits exactly a weapon's
+    // range away on one of the 8 lines): every intermediate cell between them
+    // must be walkable. On diagonals a wall at either corner (the two cells
+    // adjacent to a diagonal step) also blocks the shot.
+    private static bool HasLineOfSight(Vector2I from, Vector2I to, int range)
+    {
+        int dx = (to.X - from.X) / range; // -1, 0 or 1 (the cells are range apart)
+        int dy = (to.Y - from.Y) / range;
+        var cur = from;
+        for (int i = 0; i < range - 1; i++)
+        {
+            cur = new Vector2I(cur.X + dx, cur.Y + dy);
+            if (Walkable[cur.Y, cur.X] != 1)
+                return false;
+            if (dx != 0 && dy != 0)
+            {
+                if (Walkable[cur.Y, cur.X - dx] != 1 || Walkable[cur.Y + dy, cur.X] != 1)
+                    return false;
+            }
+        }
+        return true;
+    }
+
+    // Rebuild the shoot-target set for the active combatant (its weapon range,
+    // only cells with a clear line of sight from the current position).
     private void ComputeShootTargets()
     {
         _shootTargets.Clear();
@@ -880,12 +951,23 @@ public partial class Level01 : Control
             return;
         int range = _turns.Combatants[_turns.CurrentIndex].Equipment.Weapon.Range;
         var from = CurrentCell();
-        for (int x = 0; x < GridWidth; x++)
+        foreach (var dir in LineDirs)
         {
-            for (int y = 0; y < GridHeight; y++)
+            // Walk the line one cell at a time; the first obstacle ends it,
+            // and the cell exactly <range> away is a target iff the whole way
+            // (and, on diagonals, both corners of every step) is walkable.
+            for (int step = 1; step <= range; step++)
             {
-                var cell = new Vector2I(x, y);
-                if (IsShootCell(from, cell, range))
+                var cell = from + dir * step;
+                if (cell.X < 0 || cell.X >= GridWidth || cell.Y < 0 || cell.Y >= GridHeight)
+                    break;
+                if (Walkable[cell.Y, cell.X] != 1)
+                    break;
+                if (dir.X != 0 && dir.Y != 0
+                    && (Walkable[cell.Y, cell.X - dir.X] != 1
+                        || Walkable[cell.Y + dir.Y, cell.X] != 1))
+                    break;
+                if (step == range)
                     _shootTargets.Add(cell);
             }
         }
@@ -1093,11 +1175,13 @@ public partial class Level01 : Control
         _actionMenuEquip.Text = current.Equipment.ToText();
         int stims = current.GetItemCount(Item.BioStim);
         _healButton.Text = $"BIOSTIM x{stims}";
-        bool busy = _actionUsed || current.IsEnemy;
-        _shootButton.Disabled = busy;
-        _moveButton.Disabled = busy;
-        _waitButton.Disabled = busy;
-        _healButton.Disabled = busy || stims <= 0 || current.HitPoints >= current.MaxHitPoints;
+        // One action (shoot/wait/item) and one move per turn; each budget
+        // disables its own buttons independently.
+        bool enemyTurn = current.IsEnemy;
+        _shootButton.Disabled = enemyTurn || _actionUsed;
+        _moveButton.Disabled = enemyTurn || _movedThisTurn;
+        _waitButton.Disabled = enemyTurn || _actionUsed;
+        _healButton.Disabled = enemyTurn || _actionUsed || stims <= 0 || current.HitPoints >= current.MaxHitPoints;
         _shootButton.Modulate = _actionMode == ActionMode.Shoot ? Colors.White : new Color(1, 1, 1, 0.55f);
         _moveButton.Modulate = _actionMode == ActionMode.Move ? Colors.White : new Color(1, 1, 1, 0.55f);
     }

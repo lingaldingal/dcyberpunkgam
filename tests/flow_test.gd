@@ -170,12 +170,14 @@ func _run_flow() -> void:
 	_check(level.IsReachable(1, 1), "Vex's own cell is reachable")
 	# One step left is reachable.
 	_check(level.IsReachable(0, 1), "Vex reaches (0,1) one step left")
-	# Down the open left column to (0,11) is exactly 11 steps -> boundary hit.
-	_check(level.IsReachable(0, 11), "Vex reaches (0,11) at the 11-step boundary")
-	# (1,11) needs a 12-step detour around Rook -> just out of range.
-	_check(not level.IsReachable(1, 11), "Vex cannot reach (1,11) (12-step detour)")
-	# Obstacles are never reachable.
-	_check(not level.IsReachable(5, 1), "obstacle (5,1) not reachable")
+	# Down the open left column (clear to the bottom edge, row 15) (0,15) is
+	# exactly 14 steps -> out of range.
+	_check(not level.IsReachable(0, 15), "Vex cannot reach (0,15) (14 steps, range 11)")
+	_check(level.IsReachable(0, 11), "Vex reaches (0,11) (11 steps down the open lane)")
+	# (1,15) needs a 14-step detour around Rook -> out of range.
+	_check(not level.IsReachable(1, 15), "Vex cannot reach (1,15) (14-step detour)")
+	# Obstacles are never reachable (6,3 is a wall on the 28x16 map).
+	_check(not level.IsReachable(6, 3), "obstacle (6,3) not reachable")
 
 	# --- Camera panning: WASD pans the viewport over the board. ---
 	# Levels can be far larger than the window (up to 2000x2000 grids), so the
@@ -208,7 +210,7 @@ func _run_flow() -> void:
 			"WASD no longer moves the token")
 	level.SetPanKey(KEY_NONE)
 	await process_frame
-	level.SetBoardPixelSize(20 * TILE, 12 * TILE)
+	level.SetBoardPixelSize(28 * TILE, 16 * TILE)
 	await process_frame
 
 	# --- Click-to-move: mouse-only. Click a reachable tile, Vex jumps there. ---
@@ -245,33 +247,35 @@ func _run_flow() -> void:
 	await process_frame
 	_check(p0.position == Vector2(0, 6 * TILE), "Vex moved to (0,6) after undo")
 
-	# --- Enemy AI: on an enemy's turn it steps one tile toward the nearest
-	# party member (no party member is at weapon range from Brute here), then
-	# its turn ends automatically (no player input needed). Brute at (17,1):
-	# nearest player is Vex at (1,1), and (16,1) is walkable, so it must step
-	# west to (16,1) — deterministic under the pinned pistols. ---
-	# Reset to a known layout: party clustered left, enemies clustered right.
+	# --- Enemy AI: on an enemy's turn it moves toward the nearest party
+	# member (no party member is at weapon range from Brute here), then its
+	# turn ends automatically (no player input needed). Brute at (26,1) with
+	# pistol range 4 and movement 13: nearest player is Vex at (1,1); row y=1
+	# is clear from x=1 to x=26, so it walks west 13 tiles to (13,1) — 12 from
+	# Vex, still out of range — deterministic under the pinned pistols. ---
+	# Reset to a known layout: party clustered left, enemies spread on the
+	# right so Brute's westward lane along row y=1 is unobstructed.
 	level.SetTokenCell("Vex", 1, 1)
 	level.SetTokenCell("Kaito", 2, 1)
 	level.SetTokenCell("Rook", 1, 2)
 	level.SetTokenCell("Mira", 2, 2)
-	level.SetTokenCell("Brute", 17, 1)
-	level.SetTokenCell("Slick", 18, 1)
-	level.SetTokenCell("Gutter", 17, 2)
-	level.SetTokenCell("Wisp", 18, 2)
+	level.SetTokenCell("Brute", 26, 1)
+	level.SetTokenCell("Slick", 26, 3)
+	level.SetTokenCell("Gutter", 25, 3)
+	level.SetTokenCell("Wisp", 25, 4)
 	level.ForceCurrent("Brute")
 	await process_frame
 	var brute_before: Vector2i = level.GetTokenCell("Brute")
-	_check(brute_before == Vector2i(17, 1), "Brute starts at (17,1) (got %s)" % str(brute_before))
+	_check(brute_before == Vector2i(26, 1), "Brute starts at (26,1) (got %s)" % str(brute_before))
 	# Wait for the enemy AI (armed for 12 frames) to fire.
 	for i in 20:
 		await process_frame
 	var brute_after: Vector2i = level.GetTokenCell("Brute")
 	var moved := Vector2i(brute_after.x - brute_before.x, brute_after.y - brute_before.y)
-	_check(abs(moved.x) + abs(moved.y) == 1,
-			"enemy Brute auto-moved one tile (delta %s)" % str(moved))
-	_check(brute_after == Vector2i(16, 1),
-			"enemy Brute moved toward the players (got %s, want (16,1))" % str(brute_after))
+	_check(abs(moved.x) + abs(moved.y) == 13,
+			"enemy Brute moved its full 13-tile range toward the players (delta %s)" % str(moved))
+	_check(brute_after == Vector2i(13, 1),
+			"enemy Brute moved toward the players (got %s, want (13,1))" % str(brute_after))
 	_check(level.GetCurrentName() != "Brute",
 			"enemy turn auto-ended after acting (now '%s')" % level.GetCurrentName())
 

@@ -116,9 +116,10 @@ func _run() -> void:
 	_check(level.GetHitPoints("Vex") == hp_before,
 			"BioStim at full HP does nothing (got %d, was %d)" % [level.GetHitPoints("Vex"), hp_before])
 	# Damage Vex: enemy Brute (pistol) sits at exactly weapon range 4 and
-	# auto-shoots Vex for 2.
-	level.SetTokenCell("Vex", 5, 6)
-	level.SetTokenCell("Brute", 9, 6)
+	# auto-shoots Vex for 2. Row y=1 is completely clear, so the line of
+	# sight is open.
+	level.SetTokenCell("Vex", 5, 1)
+	level.SetTokenCell("Brute", 9, 1)
 	level.ForceCurrent("Brute")
 	for i in 24:
 		await process_frame
@@ -131,8 +132,8 @@ func _run() -> void:
 	_check(level.GetHitPoints("Vex") == 16, "BioStim healed Vex back to 16 (got %d)" % level.GetHitPoints("Vex"))
 	_check(level.GetItemCount("Vex") == 1, "BioStim count dropped to 1 (got %d)" % level.GetItemCount("Vex"))
 	# Heal again after damage; count 1 -> 0.
-	level.SetTokenCell("Vex", 5, 6)
-	level.SetTokenCell("Brute", 9, 6)
+	level.SetTokenCell("Vex", 5, 1)
+	level.SetTokenCell("Brute", 9, 1)
 	level.ForceCurrent("Brute")
 	for i in 24:
 		await process_frame
@@ -152,36 +153,49 @@ func _run() -> void:
 	_check(level.GetHitPoints("Kaito") == 14, "AI only shot the in-range target (Kaito untouched, got %d)" % level.GetHitPoints("Kaito"))
 
 	# --- Enemy AI: moves toward the nearest party member when out of range. ---
-	# Vex far west, Brute east; force Brute active and let it act.
-	level.SetTokenCell("Vex", 0, 6)
-	level.SetTokenCell("Kaito", 0, 7)
-	level.SetTokenCell("Rook", 0, 8)
-	level.SetTokenCell("Mira", 0, 9)
-	level.SetTokenCell("Brute", 19, 6)
+	# Vex far west, Brute east; force Brute active and let it act. Brute
+	# (pistol range 4, move 13) walks the clear row y=1 west 13 tiles to
+	# (13,1) — 12 from Vex, so no shot is possible after the move either.
+	level.SetTokenCell("Vex", 0, 1)
+	level.SetTokenCell("Kaito", 0, 2)
+	level.SetTokenCell("Rook", 0, 3)
+	level.SetTokenCell("Mira", 0, 4)
+	level.SetTokenCell("Slick", 26, 3)
+	level.SetTokenCell("Gutter", 25, 3)
+	level.SetTokenCell("Wisp", 25, 4)
+	level.SetTokenCell("Brute", 26, 1)
 	level.ForceCurrent("Brute")
 	var brute_before: Vector2i = level.GetTokenCell("Brute")
 	for i in 24:
 		await process_frame
 	var brute_after: Vector2i = level.GetTokenCell("Brute")
-	_check(brute_after.x < brute_before.x,
-			"enemy moved toward the players (x %d -> %d)" % [brute_before.x, brute_after.x])
+	_check(brute_after == Vector2i(13, 1),
+			"enemy moved its full 13-tile range toward the players (got %s)" % str(brute_after))
 
 	# --- Rifle shoot range: exactly 6 straight squares, 3 damage. ---
-	level.SetTokenCell("Vex", 9, 6)
-	level.SetTokenCell("Wisp", 15, 6)
+	# Vex sits at (9,1) on the clear top band (rows 0-2 have no walls). The
+	# AI test above left Brute at (13,1); move the whole enemy cluster far
+	# east so no enemy token overlaps the shoot cells being tested.
+	level.SetTokenCell("Brute", 26, 1)
+	level.SetTokenCell("Slick", 26, 3)
+	level.SetTokenCell("Gutter", 25, 3)
+	level.SetTokenCell("Wisp", 15, 1)
+	level.SetTokenCell("Vex", 9, 1)
 	level.SetWeapon("Vex", true)
 	level.ForceCurrent("Vex")
 	level.SetActionMode(SHOOT)
-	_check(level.IsShootTarget(15, 6), "rifle: 6 squares east is a shoot target")
-	_check(level.IsShootTarget(15, 0), "rifle: 6-square northeast diagonal is a shoot target")
-	_check(level.IsShootTarget(3, 0), "rifle: 6-square northwest diagonal is a shoot target")
-	_check(not level.IsShootTarget(13, 6), "rifle: 4 squares east is NOT a target (pistol-only)")
-	_check(not level.IsShootTarget(14, 6), "rifle: 5 squares east is not a target")
-	_check(not level.IsShootTarget(16, 6), "rifle: 7 squares east is not a target")
+	_check(level.IsShootTarget(15, 1), "rifle: 6 squares east is a shoot target")
+	_check(level.IsShootTarget(3, 1), "rifle: 6 squares west is a shoot target")
+	_check(level.IsShootTarget(9, 7), "rifle: 6 squares south is a shoot target (clear column)")
+	_check(not level.IsShootTarget(15, 7), "rifle: 6-square south-east diagonal blocked (wall at 12,4)")
+	_check(not level.IsShootTarget(3, 7), "rifle: 6-square south-west diagonal blocked (wall at 7,3)")
+	_check(not level.IsShootTarget(13, 1), "rifle: 4 squares east is NOT a target (pistol-only)")
+	_check(not level.IsShootTarget(14, 1), "rifle: 5 squares east is not a target")
+	_check(not level.IsShootTarget(16, 1), "rifle: 7 squares east is not a target")
 	var click_rifle := InputEventMouseButton.new()
 	click_rifle.button_index = MOUSE_BUTTON_LEFT
 	click_rifle.pressed = true
-	click_rifle.position = Vector2(15 * TILE + TILE / 2, 6 * TILE + TILE / 2)
+	click_rifle.position = Vector2(15 * TILE + TILE / 2, 1 * TILE + TILE / 2)
 	board.gui_input.emit(click_rifle)
 	await process_frame
 	_check(level.GetHitPoints("Wisp") == 9, "rifle shot deals 3 damage (got %d HP, was 12)" % level.GetHitPoints("Wisp"))
@@ -191,37 +205,42 @@ func _run() -> void:
 	# --- Pistol shoot range: exactly 4 straight squares, any of the 8 directions. ---
 	# (Wisp is at 9 HP here after the rifle test.)
 	# Set the cells BEFORE ForceCurrent: shoot targets are computed from the
-	# active combatant's position when the turn is set. Vex is centered so all
-	# 8 directions fall in-bounds.
-	level.SetTokenCell("Vex", 9, 6)
-	level.SetTokenCell("Wisp", 13, 6)
+	# active combatant's position when the turn is set. Vex at (9,1) has clear
+	# lines to 4-away cells in every direction except south-west (wall at
+	# 7,3) and south-east (wall at 12,4), which doubles as the line-of-sight
+	# (cannot shoot through obstacles) check.
+	level.SetTokenCell("Vex", 9, 1)
+	level.SetTokenCell("Wisp", 13, 1)
+	# Keep the other enemies far away so the cell (13,1) holds only Wisp.
+	level.SetTokenCell("Brute", 26, 1)
+	level.SetTokenCell("Slick", 26, 3)
+	level.SetTokenCell("Gutter", 25, 3)
 	level.ForceCurrent("Vex")
 	level.SetActionMode(SHOOT)
-	_check(level.IsShootTarget(13, 6), "enemy 4 squares east is a shoot target")
-	_check(level.IsShootTarget(9, 10), "cell 4 squares south is a shoot target")
-	_check(level.IsShootTarget(13, 10), "cell 4 squares southeast (diagonal) is a shoot target")
-	_check(level.IsShootTarget(13, 2), "cell 4 squares northeast (diagonal) is a shoot target")
-	_check(level.IsShootTarget(5, 6), "cell 4 squares west is a shoot target")
-	_check(level.IsShootTarget(9, 2), "cell 4 squares north is a shoot target")
-	_check(not level.IsShootTarget(12, 6), "3 squares away is not a shoot target")
-	_check(not level.IsShootTarget(14, 6), "5 squares away is not a shoot target")
-	_check(not level.IsShootTarget(12, 7), "knight's move (3,1) is not a shoot target")
-	_check(not level.IsShootTarget(9, 6), "own cell is not a shoot target")
+	_check(level.IsShootTarget(13, 1), "enemy 4 squares east is a shoot target")
+	_check(level.IsShootTarget(9, 5), "cell 4 squares south is a shoot target")
+	_check(level.IsShootTarget(5, 1), "cell 4 squares west is a shoot target")
+	_check(not level.IsShootTarget(13, 5), "4 squares southeast is blocked (wall at 12,4) — no shooting through obstacles")
+	_check(not level.IsShootTarget(5, 5), "4 squares southwest is blocked (wall at 7,3) — no shooting through obstacles")
+	_check(not level.IsShootTarget(12, 1), "3 squares away is not a shoot target")
+	_check(not level.IsShootTarget(14, 1), "5 squares away is not a shoot target")
+	_check(not level.IsShootTarget(12, 2), "knight's move (3,1) is not a shoot target")
+	_check(not level.IsShootTarget(9, 1), "own cell is not a shoot target")
 
-	# Clicking a non-target cell in shoot mode deals no damage (12,6 is 3 away).
+	# Clicking a non-target cell in shoot mode deals no damage (12,1 is 3 away).
 	var click_wrong_cell := InputEventMouseButton.new()
 	click_wrong_cell.button_index = MOUSE_BUTTON_LEFT
 	click_wrong_cell.pressed = true
-	click_wrong_cell.position = Vector2(12 * TILE + TILE / 2, 6 * TILE + TILE / 2)
+	click_wrong_cell.position = Vector2(12 * TILE + TILE / 2, 1 * TILE + TILE / 2)
 	board.gui_input.emit(click_wrong_cell)
 	await process_frame
 	_check(level.GetHitPoints("Wisp") == 9, "clicking a non-target in shoot mode deals no damage (Wisp at 9 from rifle test)")
 
-	# A real shot: click Wisp's cell (13,6). 2 damage, and the action is consumed.
+	# A real shot: click Wisp's cell (13,1). 2 damage, and the action is consumed.
 	var click_shoot := InputEventMouseButton.new()
 	click_shoot.button_index = MOUSE_BUTTON_LEFT
 	click_shoot.pressed = true
-	click_shoot.position = Vector2(13 * TILE + TILE / 2, 6 * TILE + TILE / 2)
+	click_shoot.position = Vector2(13 * TILE + TILE / 2, 1 * TILE + TILE / 2)
 	board.gui_input.emit(click_shoot)
 	await process_frame
 	_check(level.GetHitPoints("Wisp") == 7, "shoot deals 2 damage (got %d HP, was 9)" % level.GetHitPoints("Wisp"))
@@ -235,10 +254,10 @@ func _run() -> void:
 	var click_diag := InputEventMouseButton.new()
 	click_diag.button_index = MOUSE_BUTTON_LEFT
 	click_diag.pressed = true
-	click_diag.position = Vector2(13 * TILE + TILE / 2, 10 * TILE + TILE / 2)
+	click_diag.position = Vector2(9 * TILE + TILE / 2, 5 * TILE + TILE / 2)
 	board.gui_input.emit(click_diag)
 	await process_frame
-	_check(level.GetHitPoints("Wisp") == 7, "diagonal click at empty target does no damage")
+	_check(level.GetHitPoints("Wisp") == 7, "click at empty south target does no damage")
 
 	# --- WAIT consumes the action (no damage, no move). ---
 	level.ForceCurrent("Vex")
@@ -248,7 +267,7 @@ func _run() -> void:
 	var click_after_wait := InputEventMouseButton.new()
 	click_after_wait.button_index = MOUSE_BUTTON_LEFT
 	click_after_wait.pressed = true
-	click_after_wait.position = Vector2(13 * TILE + TILE / 2, 6 * TILE + TILE / 2)
+	click_after_wait.position = Vector2(13 * TILE + TILE / 2, 1 * TILE + TILE / 2)
 	board.gui_input.emit(click_after_wait)
 	await process_frame
 	_check(level.GetHitPoints("Wisp") == 7, "WAIT consumes the action (no shot after)")
@@ -258,6 +277,16 @@ func _run() -> void:
 	# 7 -> 5 -> 3 -> 1 -> -1 (overshoot; death is HP <= 0).
 	# Brute is forced current first: it is an enemy, so it auto-moves and
 	# auto-ends, handing the turn to Rook in the [1,1,1,1,1,1,1,1] order.
+	# The pistol test left Vex and Brute overlapping at (9,1); move the party
+	# to the far west so Brute's turn is a deterministic 13-tile walk to
+	# (13,1) with no shot possible (Vex ends up 12 away).
+	level.SetTokenCell("Vex", 0, 1)
+	level.SetTokenCell("Kaito", 0, 2)
+	level.SetTokenCell("Rook", 0, 3)
+	level.SetTokenCell("Mira", 0, 4)
+	level.SetTokenCell("Slick", 26, 3)
+	level.SetTokenCell("Gutter", 25, 3)
+	level.SetTokenCell("Wisp", 25, 4)
 	level.SetInitiativeRolls([1, 1, 1, 1, 1, 1, 1, 1])
 	level.ForceCurrent("Brute")
 	for i in 24:
