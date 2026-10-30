@@ -16,7 +16,7 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - `dcyberpunkgam.csproj` / `dcyberpunkgam.sln` — .NET project (Godot.NET.Sdk 4.7.2, net8.0)
 - `run.sh` — builds the C# then launches the game with the Mono Godot binary (the command the user runs to play)
 - `tests/flow_test.gd` — headless SceneTree functional test (menu → level → 8-combatant initiative → rounds → movement range → BFS reachability → **camera panning + clamping** → **mouse click-to-move** → once-per-turn + UNDO → enemy auto-move + auto turn-end → back). ~52 checks.
-- `tests/cutscene_test.gd` — headless functional test (menu → SCENE TEST → reveal, speaker alternation, highlight, back)
+- `tests/cutscene_test.gd` — headless functional test (menu → SCENE TEST → name-instant/body-typewriter reveal, speaker alternation, highlight, click-to-advance, back). ~19 checks.
 - `tests/resolution_test.gd` — headless test: menu RESOLUTION button cycles 1280x720 → 1600x900 → 1920x1080 → back
 - `tests/combat_test.gd` — headless combat test (HP = 5 + Con values, actions menu placement + name, shoot range in 8 directions, 2 damage, once-per-turn, WAIT, death removes token + skips turns). ~35 checks.
 - `readme.me` — pre-existing file, untouched
@@ -27,24 +27,39 @@ SCENE TEST button:
 - Two placeholder characters (Vex left = red, Kaito right = cyan) as
   ColorRect "portraits" (glow + frame + body + head + name label), no textures.
 - A bottom `PanelContainer` holds a `RichTextLabel` that reveals each line
-  character-by-character (`RevealCps`) and auto-scrolls; the speaker is
-  highlighted in the text via BBCode (`[b][color=#...]Speaker[/color][/b]: ...`).
+  character-by-character (`RevealCps` = 60, top of the 35–60 CPS reading
+  comfort range) and auto-scrolls. The speaker is highlighted in the text via
+  BBCode (`[b][color=#...]Speaker[/color][/b]: ...`); `BbcodeEnabled = true`
+  is set in `_Ready` so the tags render as bold/colored text (without it the
+  raw `[b][color]` tags show).
+- **Name instant, body types**: `ShowLine()` sets `_charsShown = 0` and the
+  speaker name appears in full immediately; only the line body types itself
+  out (see `UpdateText()`, which builds `SpeakerBbCode(line) + body[..shown]`).
 - The active speaker's portrait stays at full brightness with a pulsing glow;
   the inactive one dims to alpha 0.35 and its glow hides. Lines alternate
   Vex/Kaito.
-- **Manual advance**: lines do NOT auto-advance. A left click anywhere
-  (`_GuiInput`) or Space/Enter (`_UnhandledInput`, `ui_accept`/`ui_select`)
-  calls `Advance()`: first finishes revealing the current line, then moves to
-  the next. Answering the LAST line ends the scene → `GameManager.QuitToMenu()`.
-  The root Control uses `MouseFilter.Stop` to receive clicks (the BACK button
-  is top-right and doesn't overlap dialogue clicks). A `Hint` label under the
-  text says "Click / Space / Enter to continue". `BACK TO MENU` still works
-  via `GameManager.QuitToMenu()`.
+- **Manual advance (single press)**: lines do NOT auto-advance. A left click
+  anywhere (`_GuiInput`) or Space/Enter (`_UnhandledInput`, `ui_accept`/
+  `ui_select`) calls `Advance()`, which moves straight to the next line — it
+  does NOT require a separate "finish reveal" press (the reveal completes
+  implicitly). Answering the LAST line ends the scene → `GameManager.QuitToMenu()`.
+  A `Hint` label under the text says "Click / Space / Enter to continue".
+  `BACK TO MENU` still works via `GameManager.QuitToMenu()`.
+- **Clicks must reach the root `_GuiInput`.** The `Background` ColorRect,
+  `DialogueBox` PanelContainer, and `Text` RichTextLabel all get
+  `MouseFilter.Ignore` in `_Ready` (and the root `Control` has
+  `mouse_filter = 2`/Ignore in the .tscn) so a click anywhere bubbles up to
+  the root's `gui_input`. If any of them is left at the default `Stop`, it
+  swallows the click and dialogue stops advancing. The BACK button keeps its
+  own `Pressed` handler (it's top-right and doesn't overlap dialogue clicks).
 - Test hooks: `GetLineIndex()`, `GetSpeakerName()`, `GetLineText()`,
   `GetLineCount()`, `GetTextPlain()` (logical text, BBCode-free), `SkipReveal()`,
   `SetLine(int)`, `Advance()`. `cutscene_test.gd` uses these (headless, so no
   render pass) and simulates a click with `Input.parse_input_event` (separate
-  press/release events, position on empty area to avoid buttons).
+  press/release events). NOTE: in `-s` headless mode the root Control is sized
+  64×64, so before a click test the scene's `.size` must be set back to
+  1280×720 (or the text rect lands off-screen and the root's `gui_input`
+  hit-test misses).
 
 ## Turn system (initiative) — 8 combatants
 `TurnSystem` (C#, plain class — not a Godot node) drives turn order in Level01:
@@ -173,7 +188,7 @@ GODOT=/home/bigal/Applications/GodotMono/Godot_v4.7.2-stable_mono_linux_x86_64/G
 $GODOT --headless --path . --import                    # clean import check
 $GODOT --headless --path . --quit-after 120            # smoke run (main scene = menu)
 $GODOT --headless --path . -s res://tests/flow_test.gd      # functional flow test (52 checks)
-$GODOT --headless --path . -s res://tests/cutscene_test.gd  # cutscene test (14 checks)
+$GODOT --headless --path . -s res://tests/cutscene_test.gd  # cutscene test (19 checks)
 $GODOT --headless --path . -s res://tests/combat_test.gd    # combat: HP/shoot/death/actions menu (35 checks)
 ```
 Headless alone is NOT enough for UI: it never renders, so off-screen controls
