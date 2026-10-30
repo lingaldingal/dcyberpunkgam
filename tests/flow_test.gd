@@ -325,6 +325,44 @@ func _run_flow() -> void:
 			"holding D pans the small board right and it stays (delta %s)" % (post_pan - pre_pan))
 	level.ResetCamera()
 	await process_frame
+
+	# --- Mouse-wheel zoom: the board scales uniformly, clamped to a small
+	# range (ZoomMin..ZoomMax), anchored on the viewport center. The board's
+	# on-screen scale must track the camera scale exactly. ---
+	_check(absf(level.GetCameraScale() - 1.0) < 1e-6, "camera scale starts at 1.0")
+	# Zoom in a few notches: scale rises by ZoomStep each time.
+	level.ZoomBy(1.0)
+	await process_frame
+	_check(absf(level.GetCameraScale() - 1.1) < 1e-3, "zoom in raises the scale to 1.1")
+	_check(absf(board.scale.x - level.GetCameraScale()) < 1e-3,
+			"board scale tracks the camera scale")
+	level.ZoomBy(1.0)
+	await process_frame
+	_check(absf(level.GetCameraScale() - 1.21) < 1e-3, "zooming in again compounds to 1.21")
+	# Zoom back out: scale falls and returns toward 1.0.
+	level.ZoomBy(-1.0)
+	await process_frame
+	_check(absf(level.GetCameraScale() - 1.1) < 1e-3, "zoom out lowers the scale to 1.1")
+	level.ZoomBy(-1.0)
+	await process_frame
+	_check(absf(level.GetCameraScale() - 1.0) < 1e-3, "zooming out returns to 1.0")
+	# The scale is clamped at the upper limit: many zoom-in notches stop at ZoomMax.
+	for i in 20:
+		level.ZoomBy(1.0)
+	await process_frame
+	_check(level.GetCameraScale() <= 1.75 + 1e-3, "zoom in clamps at the max limit")
+	_check(level.GetCameraScale() >= 1.74, "zoom in reaches the max limit")
+	# And at the lower limit: many zoom-out notches stop at ZoomMin.
+	for i in 20:
+		level.ZoomBy(-1.0)
+	await process_frame
+	_check(level.GetCameraScale() >= 0.75 - 1e-3, "zoom out clamps at the min limit")
+	_check(level.GetCameraScale() <= 0.76, "zoom out reaches the min limit")
+	# Reset restores the default (no zoom) centered view.
+	level.ResetCamera()
+	await process_frame
+	_check(absf(level.GetCameraScale() - 1.0) < 1e-6, "reset restores scale to 1.0")
+	_check(absf(board.scale.x - 1.0) < 1e-6, "reset restores the board scale to 1.0")
 	# Restore the headless viewport size (the click-to-move tests below emit
 	# board-local clicks, which don't depend on this, but keep it clean).
 	level.size = Vector2(64, 64)
