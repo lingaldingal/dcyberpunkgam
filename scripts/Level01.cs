@@ -72,6 +72,16 @@ public partial class Level01 : Control
     // is up to 2000x2000 grids, so a much higher rate is needed to traverse it.
     private const float CameraPanSpeed = 480f;
 
+    // Mouse-wheel zoom: the board is scaled uniformly around the viewport
+    // center (see ZoomBoard). 1.0 is the default (no zoom). The limits are
+    // intentionally small for now — the exact range is to be tuned later — so
+    // the player can zoom in a little (1.75x) or out a little (0.75x).
+    private const float ZoomMin = 0.75f;
+    private const float ZoomMax = 1.75f;
+    // Per wheel-notch multiplier: zoom in multiplies the scale by this, zoom
+    // out divides by it. 1.1 per notch is a gentle, controllable step.
+    private const float ZoomStep = 1.1f;
+
     // --- Isometric projection --------------------------------------------
     // The board is drawn as a 2:1 isometric grid: a logical board pixel
     // (x, y) is shown at the "iso" screen point
@@ -220,6 +230,9 @@ public partial class Level01 : Control
 
     // Top-left pixel of the viewport within the board (see camera section).
     private Vector2 _cameraPos;
+    // Uniform board scale (1.0 = default). Zooming scales the WHOLE board
+    // (iso layer + name labels) around the viewport center — see ZoomBoard.
+    private float _cameraScale = 1f;
     // Test hook: when non-None, UpdateCamera pans as if this key were held.
     private Key _forcedPanKey;
 
@@ -423,8 +436,17 @@ public partial class Level01 : Control
         if (_board == null)
             return;
 
-        float viewW = Size.X > 0 ? Size.X : 1;
-        float viewH = Size.Y > 0 ? Size.Y : 1;
+        // The board is scaled by _cameraScale (mouse-wheel zoom). The clamp
+        // limits are computed for the WIDEST view — the window at full
+        // zoom-out (ZoomMin) — and held CONSTANT across every zoom level.
+        // That makes the pan limits the borders of the most zoomed-out view:
+        // zoomed in, you can still pan all the way to the same edges (the
+        // board is larger on-screen, so it overflows, which is normal zoom).
+        // Clamping to the current (smaller, zoomed-in) view instead would
+        // shrink the pan range and leave parts of the map unreachable.
+        float scale = _cameraScale > 0 ? _cameraScale : 1f;
+        float viewW = (Size.X > 0 ? Size.X : 1) / ZoomMin;
+        float viewH = (Size.Y > 0 ? Size.Y : 1) / ZoomMin;
 
         float loX = _isoBounds.End.X - viewW;   // board's right edge at screen right
         float hiX = _isoBounds.Position.X;      // board's left edge at screen left
@@ -436,6 +458,7 @@ public partial class Level01 : Control
             Mathf.Clamp(_cameraPos.Y, Mathf.Min(loY, hiY), Mathf.Max(loY, hiY)));
 
         _board.Position = -_cameraPos;
+        _board.Scale = new Vector2(scale, scale);
     }
 
     // The ISO diamond's true on-screen bounding box in board space:
@@ -477,6 +500,9 @@ public partial class Level01 : Control
     private void CenterCamera()
     {
         _cameraCentered = true;
+        // "Reset the view" = centered on the diamond AND no zoom, so a zoomed
+        // camera is restored to the default scale along with its position.
+        _cameraScale = 1f;
         // Start centered on the ISO diamond: the diamond's center is the
         // board-space point ((W-H)*T/4, (W+H)*T/8); the camera is the board
         // pixel at the viewport's top-left, i.e. that center minus the
@@ -547,7 +573,23 @@ public partial class Level01 : Control
     {
         if (!(@event is InputEventMouse me) || _board == null)
             return;
-        var local = me.Position - _board.GetGlobalPosition();
+        // Mouse-wheel zoom is handled here (window-local) and works anywhere
+        // in the window — including over the action menu — so it is checked
+        // before the menu-overlap guard below.
+        if (me is InputEventMouseButton wheel && wheel.Pressed
+            && (wheel.ButtonIndex == MouseButton.WheelUp
+                || wheel.ButtonIndex == MouseButton.WheelDown))
+        {
+            ZoomBoard(wheel.ButtonIndex == MouseButton.WheelUp ? 1f : -1f);
+            return;
+        }
+        // The board is scaled by _cameraScale (mouse-wheel zoom), so a
+        // window-local point maps to board-local by subtracting the board's
+        // on-screen origin AND dividing by the scale (the board's children
+        // live in pre-scale board space). Without the divide, clicks land one
+        // tile off once zoomed (see the zoom test / _zoom_probe).
+        float scale = _cameraScale > 0 ? _cameraScale : 1f;
+        var local = (me.Position - _board.GetGlobalPosition()) / scale;
         // A click landing on the action menu (or its items select list) is for
         // its buttons, not the board (the menu overlaps the diamond's
         // bottom-left corner). A click anywhere else closes the items list.
@@ -558,6 +600,27 @@ public partial class Level01 : Control
         CloseItemsMenu();
         me.Position = local;
         OnBoardGuiInput(me);
+    }
+
+    // Zoom the board in (dir > 0) or out (dir < 0) by one step, anchored on the
+    // VIEWPORT CENTER so the point under the screen center stays put while the
+    // scale changes (the standard, stable zoom-to-point behavior). The board
+    // is scaled uniformly around its (0,0) origin, so after scaling the board's
+    // on-screen center shifts by (scale - 1) * center; nudging the camera by
+    // the same amount keeps that point fixed. The camera is then clamped to the
+    // new (scaled) view, so panning stays valid at every zoom level.
+    private void ZoomBoard(float dir)
+    {
+        if (_board == null || Size.X <= 0 || Size.Y <= 0)
+            return;
+        float old = _cameraScale;
+        float next = Mathf.Clamp(old * Mathf.Pow(ZoomStep, dir), ZoomMin, ZoomMax);
+        if (Mathf.Abs(next - old) < 1e-5f)
+            return;
+        var center = new Vector2(Size.X / 2f, Size.Y / 2f);
+        _cameraPos += (next - old) * center;
+        _cameraScale = next;
+        ApplyCamera();
     }
 
     private void OnBoardGuiInput(InputEvent @event)
@@ -761,6 +824,16 @@ public partial class Level01 : Control
         _cameraPos += offset;
         ApplyCamera();
     }
+
+    /// <summary>Test hook: the current board scale (1.0 = no zoom).</summary>
+    public float GetCameraScale() => _cameraScale;
+
+    /// <summary>
+    /// Test hook: zoom in (dir &gt; 0) or out (dir &lt; 0) by one step, exactly
+    /// as a mouse-wheel notch would — so the zoom path can be exercised
+    /// without a real wheel event.
+    /// </summary>
+    public void ZoomBy(float dir) => ZoomBoard(dir);
 
     /// <summary>
     /// Test hook: make <paramref name="key"/> behave as held for the next
