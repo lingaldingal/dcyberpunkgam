@@ -125,7 +125,14 @@ SCENE TEST button:
   `GetPathPreview() -> float[4]` `[lineVis, endVis, endX, endY]`.
   `flow_test.gd` covers the route shape (detour via the open x=0 lane), the
   endpoint circle, and the hide cases (~79 checks total now).
-- **Isometric projection.** `level_01` is 2:1 iso. The `Board` Control holds
+- **Isometric projection.** `level_01` is 2:1 iso. `TileSize` = **64px**
+  (`Level01.TileSize`, bumped from 48 so the map reads bigger/closer and leaves
+  room on each diamond for standing/crouching/shooting character sprites and
+  later environment art; the 28x16 diamond is now 1408x704 board px, bigger
+  than the 1280x720 window, so it is edge-clamped and pannable at the default
+  zoom). All fixed UI offsets (token name labels, HP readouts, wall height,
+  path-preview end circle, token diamond pad) were scaled up with the tile.
+  The `Board` Control holds
   an `Iso` Node2D child with a skew `Transform2D(X=(.5,.25), Y=(-.5,.25))`.
   Everything that must look skewed (floor, walls, highlights, tokens, range
   overlay) is drawn inside `Iso` in **LOGICAL board pixels** (`x*TILE,
@@ -161,7 +168,7 @@ SCENE TEST button:
   `Board.Position = -camera`; the board's children keep board-local coords;
   only the board node moves. **Mouse-wheel zoom** (`ZoomBoard`, via
   `OnLevelGuiInput`) scales the board by `_cameraScale` (clamped
-  `ZoomMin` 0.75 .. `ZoomMax` 1.75, step `ZoomStep` 1.1) around the viewport
+  `ZoomMin` 0.9 .. `ZoomMax` 1.75, step `ZoomStep` 1.1) around the viewport
   center. The pan clamp's view size is the window divided by the **CURRENT
   scale** (NOT a constant): zoomed in, the viewport covers fewer board
   pixels, so at the far bottom-right the board's edge is pinned to the

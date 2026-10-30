@@ -65,7 +65,11 @@ public partial class Level01 : Control
 {
     private const int GridWidth = 28;
     private const int GridHeight = 16;
-    private const int TileSize = 48;
+    // Tile size in logical board pixels. 64 leaves generous room on each
+    // diamond for standing/crouching/shooting character sprites and later
+    // environment art, while the 28x16 map still fits a 1280x720 window at
+    // the default zoom (diamond 1856x928; the edges are reachable via pan).
+    private const int TileSize = 64;
     // WASD pan speed in pixels per SECOND (frame-rate independent; the actual
     // per-frame step is CameraPanSpeed * delta in UpdateCamera). 480 px/s is
     // fast enough to feel responsive on a small map yet controllable — the map
@@ -75,8 +79,11 @@ public partial class Level01 : Control
     // Mouse-wheel zoom: the board is scaled uniformly around the viewport
     // center (see ZoomBoard). 1.0 is the default (no zoom). The limits are
     // intentionally small for now — the exact range is to be tuned later — so
-    // the player can zoom in a little (1.75x) or out a little (0.75x).
-    private const float ZoomMin = 0.75f;
+    // the player can zoom in a little (1.75x) or out a little (0.9x). The min
+    // is 0.9 (not lower) because the map is already large on screen: at 64px
+    // tiles the diamond (1856x928) is bigger than the window, so zooming out
+    // below ~0.95 would shrink it back to the old small-tile proportions.
+    private const float ZoomMin = 0.9f;
     private const float ZoomMax = 1.75f;
     // Per wheel-notch multiplier: zoom in multiplies the scale by this, zoom
     // out divides by it. 1.1 per notch is a gentle, controllable step.
@@ -1712,7 +1719,7 @@ public partial class Level01 : Control
             if (_tokenLabels[i] == null)
                 continue;
             var cell = TokenCell(i);
-            _tokenLabels[i].Position = IsoCellCenter(cell) + new Vector2(-24, -26);
+            _tokenLabels[i].Position = IsoCellCenter(cell) + new Vector2(-32, -34);
         }
     }
 
@@ -1754,12 +1761,12 @@ public partial class Level01 : Control
             {
                 Text = name,
                 HorizontalAlignment = HorizontalAlignment.Center,
-                Size = new Vector2(48, 12),
+                Size = new Vector2(64, 16),
                 MouseFilter = MouseFilterEnum.Ignore,
                 ZIndex = 2,
             };
             label.Modulate = new Color(0.95f, 0.95f, 1f);
-            label.AddThemeFontSizeOverride("font_size", 12);
+            label.AddThemeFontSizeOverride("font_size", 14);
             _board.AddChild(label);
             _tokenLabels.Add(label);
         }

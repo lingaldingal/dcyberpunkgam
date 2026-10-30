@@ -6,7 +6,7 @@ extends SceneTree
 # test forces deterministic rolls via SetInitiativeRolls.
 # Run: godot --headless --path . -s res://tests/flow_test.gd
 
-const TILE := 48
+const TILE := 64
 
 # Roster order (index -> name, agility, is_enemy).
 const ROSTER := [
@@ -363,20 +363,22 @@ func _run_flow() -> void:
 	for i in 20:
 		level.ZoomBy(-1.0)
 	await process_frame
-	_check(level.GetCameraScale() >= 0.75 - 1e-3, "zoom out clamps at the min limit")
-	_check(level.GetCameraScale() <= 0.76, "zoom out reaches the min limit")
+	_check(level.GetCameraScale() >= 0.9 - 1e-3, "zoom out clamps at the min limit")
+	_check(level.GetCameraScale() <= 0.95, "zoom out reaches the min limit")
 	# Zoom/pan interaction: the clamp's visible span is window/scale, so at
 	# the far bottom-right the board's edge is pinned to the SCREEN edge at
 	# every zoom level — every square stays reachable no matter how zoomed
-	# in. The iso bounds are x:[-384, 672] (width 1056), y:[0, 528]. The
+	# in. The iso bounds are x:[-512, 896] (width 1408), y:[0, 704]. The
 	# far-corner camera limit is bounds.End - window/scale, so:
-	#   zoomed in  (1.75): x = 672 - 731.4 = -59.4 / y = 528 - 411.4 = 116.6
-	#   zoomed out (0.75): the diamond (1056x528) fits inside the view
-	#     (1707x960), so it slides to its single centered point (-384, 0).
+	#   zoomed in  (1.75): x = 896 - 731.4 = 164.6 / y = 704 - 411.4 = 292.6
+	#   zoomed out (0.9): x = 896 - 1422.2 = -526.2 / y = 704 - 800 = -96
+	#     (the diamond 1408x704 still EXCEEDS the view 1422x800 on height, so
+	#     it stays edge-clamped even at the minimum zoom)
 	level.ResetCamera()
 	await process_frame
-	# Fully zoomed OUT (0.75): the diamond is smaller than the view on both
-	# axes, so panning in either direction clamps to the centered position.
+	# Fully zoomed OUT (0.9): the diamond is bigger than the view on both
+	# axes, so the board stays edge-clamped; the far/near extremes are the
+	# screen-edge positions computed above.
 	for i in 20:
 		level.ZoomBy(-1.0)
 	await process_frame
@@ -386,15 +388,15 @@ func _run_flow() -> void:
 	level.PanCameraBy(Vector2(-1e6, -1e6))
 	await process_frame
 	var min_out: Vector2 = level.GetCameraPos()
-	_check(absf(max_out.x - (-384.0)) < 1.0 and absf(max_out.y - 0.0) < 1.0,
-			"zoomed-out far pan stops at the board's top-left (-384 / 0)")
-	_check(absf(min_out.x - (672.0 - 1280.0 / 0.75)) < 1.0
-			and absf(min_out.y - (528.0 - 720.0 / 0.75)) < 1.0,
-			"zoomed-out near pan stops at bounds.End - view (-1034.7 / -432)")
-	# Fully zoomed IN (1.75): the diamond's on-screen size (1848x924)
+	_check(absf(max_out.x - (-512.0)) < 1.0 and absf(max_out.y - 0.0) < 1.0,
+			"zoomed-out far pan stops at the board's top-left (-512 / 0)")
+	_check(absf(min_out.x - (896.0 - 1280.0 / 0.9)) < 1.0
+			and absf(min_out.y - (704.0 - 720.0 / 0.9)) < 1.0,
+			"zoomed-out near pan stops at bounds.End - view (-526.2 / -96)")
+	# Fully zoomed IN (1.75): the diamond's on-screen size (2464x1232)
 	# EXCEEDS the 1280x720 window, so the board clamps at its edges and the
 	# far (bottom-right) corner is pinned to the SCREEN edge — reachable
-	# camera position bounds.End - window/1.75 (-59.4 / 116.6), FURTHER into
+	# camera position bounds.End - window/1.75 (164.6 / 292.6), FURTHER into
 	# the board than the zoomed-out far point (which would leave the
 	# bottom-right of the map unpannable).
 	for i in 20:
@@ -407,14 +409,14 @@ func _run_flow() -> void:
 	level.PanCameraBy(Vector2(-1e6, -1e6))
 	await process_frame
 	var min_in: Vector2 = level.GetCameraPos()
-	_check(absf(max_in.x - (672.0 - 1280.0 / 1.75)) < 1.0
-			and absf(max_in.y - (528.0 - 720.0 / 1.75)) < 1.0,
-			"zoomed-in far corner pinned to the screen edge (-59.4 / 116.6)")
+	_check(absf(max_in.x - (896.0 - 1280.0 / 1.75)) < 1.0
+			and absf(max_in.y - (704.0 - 720.0 / 1.75)) < 1.0,
+			"zoomed-in far corner pinned to the screen edge (164.6 / 292.6)")
 	_check(max_in.x > max_out.x and max_in.y > max_out.y,
 			"zooming in extends the reachable far edge into the board")
 	# The near edge (board's top-left at the screen edge) is the board's
-	# Position, unchanged by zoom: min camera = (-384, 0) at every level.
-	_check(absf(min_in.x - (-384.0)) < 1.0 and absf(min_in.y - 0.0) < 1.0,
+	# Position, unchanged by zoom: min camera = (-512, 0) at every level.
+	_check(absf(min_in.x - (-512.0)) < 1.0 and absf(min_in.y - 0.0) < 1.0,
 			"zoomed-in near edge stays at the board's top-left")
 	# Reset restores the default (no zoom) centered view.
 	level.ResetCamera()

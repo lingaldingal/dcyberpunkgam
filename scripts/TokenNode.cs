@@ -13,7 +13,7 @@ namespace Dcyberpunkgam;
 /// </summary>
 public partial class TokenNode : Node2D
 {
-    private const float Pad = 7;
+    private const float Pad = 9;
     private readonly Color _color;
     private readonly int _tile;
 
