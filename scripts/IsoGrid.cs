@@ -22,6 +22,11 @@ public partial class IsoGrid : Node2D
     // Cells the active combatant can hit with the melee weapon (orange diamonds):
     // the four directly adjacent squares holding a live token.
     public IEnumerable<Vector2I> Meleeable { get; set; } = new HashSet<Vector2I>();
+    // Cells the active party member can throw a grenade to (yellow diamonds).
+    public IEnumerable<Vector2I> Grenadeable { get; set; } = new HashSet<Vector2I>();
+    // The cross-shaped blast area of the hovered grenade target (5 cells),
+    // shown as a brighter preview while aiming.
+    public IEnumerable<Vector2I> BlastCells { get; set; } = new HashSet<Vector2I>();
     // (x, y, hp text) per live token, drawn above the token's diamond.
     public List<(int X, int Y, string Text)> TokenLabels = new();
 
@@ -35,6 +40,8 @@ public partial class IsoGrid : Node2D
     private static readonly Color MoveHl = new(0.3f, 0.9f, 0.6f, 0.28f);
     private static readonly Color ShootHl = new(0.95f, 0.35f, 0.3f, 0.38f);
     private static readonly Color MeleeHl = new(0.98f, 0.62f, 0.2f, 0.42f);
+    private static readonly Color GrenadeHl = new(0.95f, 0.9f, 0.3f, 0.30f);
+    private static readonly Color BlastHl = new(0.95f, 0.9f, 0.3f, 0.55f);
     private static readonly Color HpText = new(0.9f, 0.95f, 1f);
 
     public void Rebuild() => QueueRedraw();
@@ -110,13 +117,18 @@ public partial class IsoGrid : Node2D
             }
         }
 
-        // 2. Highlights (move = green, shoot = red, melee = orange).
+        // 2. Highlights (move = green, shoot = red, melee = orange,
+        // grenade targets = yellow, blast preview = brighter yellow).
         foreach (var cell in Reachable)
             DrawColoredPolygon(Diamond(cell.X, cell.Y), MoveHl);
         foreach (var cell in Shootable)
             DrawColoredPolygon(Diamond(cell.X, cell.Y), ShootHl);
         foreach (var cell in Meleeable)
             DrawColoredPolygon(Diamond(cell.X, cell.Y), MeleeHl);
+        foreach (var cell in Grenadeable)
+            DrawColoredPolygon(Diamond(cell.X, cell.Y), GrenadeHl);
+        foreach (var cell in BlastCells)
+            DrawColoredPolygon(Diamond(cell.X, cell.Y), BlastHl);
 
         // 3. Token HP readouts, drawn last so they sit on top of everything.
         var font = ThemeDB.FallbackFont;

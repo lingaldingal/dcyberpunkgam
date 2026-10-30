@@ -192,9 +192,10 @@ func _run() -> void:
 	# (Vex 4 away, clear row), so the AI held its position and just shot.
 	_check(level.GetTokenCell("Brute") == Vector2i(13, 1),
 			"enemy already in range holds position (no move) and shoots (got %s)" % str(level.GetTokenCell("Brute")))
-	# Use the BioStim via the action menu: Vex is active now (after Brute's turn).
+	# Use the BioStim via the items select list: Vex is active now (after
+	# Brute's turn). The BioStim button lives in the ITEMS panel.
 	level.ForceCurrent("Vex")
-	level.get_node("ActionMenu/VBox/Actions/Heal").pressed.emit()
+	level.get_node("ActionMenu/VBox/ItemsMenu/ItemsVBox/BioStim").pressed.emit()
 	await process_frame
 	_check(level.GetHitPoints("Vex") == 16, "BioStim healed Vex back to 16 (got %d)" % level.GetHitPoints("Vex"))
 	_check(level.GetItemCount("Vex") == 1, "BioStim count dropped to 1 (got %d)" % level.GetItemCount("Vex"))
@@ -208,12 +209,12 @@ func _run() -> void:
 	for i in 24:
 		await process_frame
 	level.ForceCurrent("Vex")
-	level.get_node("ActionMenu/VBox/Actions/Heal").pressed.emit()
+	level.get_node("ActionMenu/VBox/ItemsMenu/ItemsVBox/BioStim").pressed.emit()
 	await process_frame
 	_check(level.GetHitPoints("Vex") == 16 and level.GetItemCount("Vex") == 0,
 			"second BioStim used, none left (got %d HP, %d stims)" % [level.GetHitPoints("Vex"), level.GetItemCount("Vex")])
-	# No stims left: the menu's heal button is disabled.
-	var heal_btn: Button = level.get_node("ActionMenu/VBox/Actions/Heal")
+	# No stims left: the items menu's BioStim button is disabled.
+	var heal_btn: Button = level.get_node("ActionMenu/VBox/ItemsMenu/ItemsVBox/BioStim")
 	_check(heal_btn.disabled == true, "BIOSTIM button disabled at 0 stims")
 	_check(heal_btn.text == "BIOSTIM x0", "BIOSTIM button shows the count (got '%s')" % heal_btn.text)
 
@@ -582,6 +583,89 @@ func _run() -> void:
 	if name_label != null:
 		_check(String(name_label.text) == level.GetCurrentName(),
 				"menu name follows the active character (got '%s')" % String(name_label.text))
+
+	# --- Items menu + Grenade ------------------------------------------------
+	# Every combatant starts with exactly one grenade.
+	for n in NAMES:
+		_check(level.GetItemCount(n, "Grenade") == 1,
+				"%s starts with 1 grenade (got %d)" % [n, level.GetItemCount(n, "Grenade")])
+	# The actions menu has an ITEMS button (replacing the old BIOSTIM button).
+	var items_btn: Button = level.get_node("ActionMenu/VBox/Actions/Items")
+	_check(items_btn != null, "actions menu has an ITEMS button")
+	_check(String(items_btn.text) == "ITEMS", "ITEMS button label (got '%s')" % String(items_btn.text))
+	# The items select list holds a BioStim and a Grenade button.
+	var biostim_btn: Button = level.get_node("ActionMenu/VBox/ItemsMenu/ItemsVBox/BioStim")
+	var grenade_btn: Button = level.get_node("ActionMenu/VBox/ItemsMenu/ItemsVBox/Grenade")
+	_check(biostim_btn != null and grenade_btn != null,
+			"items menu lists BioStim and Grenade")
+	# The items list is hidden until ITEMS is pressed.
+	level.ForceCurrent("Vex")
+	await process_frame
+	_check(level.GetItemsMenuOpen() == false, "items list starts closed")
+	items_btn.pressed.emit()
+	await process_frame
+	_check(level.GetItemsMenuOpen() == true, "pressing ITEMS opens the items list")
+	_check(level.GetActionMode() == 0, "opening items does not change the action mode")
+
+	# --- Grenade throw range: a square of side 2*4+1 = 9 centered on the
+	# thrower (Chebyshev distance <= 4, any direction). ---
+	# Vex sits at (1,1). The throw range is 4 squares away in any direction.
+	level.SetTokenCell("Vex", 1, 1)
+	await process_frame
+	# Enter grenade mode via the items menu's GRENADE button.
+	level.ForceCurrent("Vex")
+	await process_frame
+	grenade_btn.pressed.emit()
+	await process_frame
+	_check(level.GetActionMode() == 3, "GRENADE button enters grenade mode (got %d)" % level.GetActionMode())
+	# Within range (Chebyshev <= 4): 4 east, 4 west, 4 south, 4 north.
+	_check(level.IsGrenadeTarget(5, 1), "4 east is throwable (got %s)" % level.IsGrenadeTarget(5, 1))
+	_check(level.IsGrenadeTarget(1, 5), "4 south is throwable (got %s)" % level.IsGrenadeTarget(1, 5))
+	_check(level.IsGrenadeTarget(5, 5), "4 east + 4 south (diagonal) is throwable (got %s)" % level.IsGrenadeTarget(5, 5))
+	# Out of range: 5 away.
+	_check(level.IsGrenadeTarget(6, 1) == false, "5 east is NOT throwable")
+	_check(level.IsGrenadeTarget(1, 6) == false, "5 south is NOT throwable")
+	_check(level.IsGrenadeTarget(6, 6) == false, "5 east + 5 south is NOT throwable")
+	# The thrower's own cell is throwable.
+	_check(level.IsGrenadeTarget(1, 1), "own cell is throwable")
+
+	# --- Grenade blast: cross shape (landing cell + 4 orthogonal neighbours),
+	# 6 damage to every combatant standing on those cells. ---
+	# Party cluster: Vex (1,1), Kaito (2,1), Rook (1,2), Mira (2,2). Enemies are
+	# far east at (26,1)/(25,1)/(26,2)/(25,2) — outside the blast.
+	level.SetTokenCell("Kaito", 2, 1)
+	level.SetTokenCell("Rook", 1, 2)
+	level.SetTokenCell("Mira", 2, 2)
+	await process_frame
+	var kaito_hp: int = level.GetHitPoints("Kaito")
+	var rook_hp: int = level.GetHitPoints("Rook")
+	var mira_hp: int = level.GetHitPoints("Mira")
+	var vex_hp: int = level.GetHitPoints("Vex")
+	var brute_hp: int = level.GetHitPoints("Brute")
+	# Throw on (2,1): blast = (2,1),(1,1),(3,1),(2,0),(2,2). Kaito (2,1), Rook
+	# (1,2) is NOT in the cross, Mira (2,2) IS, Vex (1,1) IS. So Kaito, Vex and
+	# Mira each take 6.
+	var threw: bool = level.UseGrenade(2, 1)
+	_check(threw == true, "UseGrenade on a valid cell succeeds")
+	_check(level.GetHitPoints("Kaito") == kaito_hp - 6, "Kaito (on landing cell) took 6 (got %d)" % level.GetHitPoints("Kaito"))
+	_check(level.GetHitPoints("Vex") == vex_hp - 6, "Vex (orthogonal neighbour) took 6 (got %d)" % level.GetHitPoints("Vex"))
+	_check(level.GetHitPoints("Mira") == mira_hp - 6, "Mira (orthogonal neighbour) took 6 (got %d)" % level.GetHitPoints("Mira"))
+	_check(level.GetHitPoints("Rook") == rook_hp, "Rook (diagonal, not in cross) unharmed (got %d)" % level.GetHitPoints("Rook"))
+	_check(level.GetHitPoints("Brute") == brute_hp, "Brute (far away) unharmed (got %d)" % level.GetHitPoints("Brute"))
+	# The grenade was consumed and the action is spent.
+	_check(level.GetItemCount("Vex", "Grenade") == 0, "Vex's grenade was consumed (got %d)" % level.GetItemCount("Vex", "Grenade"))
+	# A second throw on the same turn fails (action already spent).
+	_check(level.UseGrenade(2, 1) == false, "second grenade throw this turn fails (action spent)")
+	# The action menu reflects the spent action: the grenade count shows 0.
+	_check(grenade_btn.disabled == true, "GRENADE button disabled after throwing")
+	_check(String(grenade_btn.text) == "GRENADE x0", "GRENADE button shows the count (got '%s')" % String(grenade_btn.text))
+
+	# --- Fresh turn, 0 grenades: the GRENADE button is disabled because there
+	# is nothing to throw (the action is re-armed, so only the count gates). ---
+	level.ForceCurrent("Vex")
+	await process_frame
+	_check(grenade_btn.disabled == true, "GRENADE button disabled at 0 grenades on a fresh turn")
+	_check(String(grenade_btn.text) == "GRENADE x0", "GRENADE button shows 0 on a fresh turn (got '%s')" % String(grenade_btn.text))
 
 	_finish()
 
