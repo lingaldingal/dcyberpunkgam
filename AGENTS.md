@@ -6,7 +6,7 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - `GAMES.md` — game design outline (OUTDATED: references removed `CharacterData`; trust the code)
 - `project.godot` — main scene `res://scenes/main_menu.tscn`; `GameManager` C# autoload; `features` includes `C#`, `dotnet`
 - `scenes/main_menu.tscn` — title screen: NEW GAME / CONTINUE / SCENE TEST / RESOLUTION / QUIT
-- `scenes/level_01.tscn` — turn-based arena (28×16 grid board, 4 party + 4 enemy tokens, HUD, END TURN / UNDO / BACK)
+- `scenes/level_01.tscn` — turn-based arena (28×16 grid board, 4 party + 4 enemy tokens, top-right HUD panel w/ END TURN / UNDO / BACK, bottom-left actions menu with END TURN)
 - `scenes/scene_test.tscn` — basic 2D cutscene (two placeholder characters L/R, scrolling cheese dialogue, speaker highlight)
 - `scripts/GameManager.cs` — autoload: scene flow (StartGame / StartSceneTest / QuitToMenu); exposes `Instance`
 - `scripts/MainMenu.cs` — menu buttons incl. `OnResolutionPressed()` (cycles window size); `GetResolution()` test hook
@@ -20,10 +20,10 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - `scripts/TurnSystem.cs` — round-based initiative turn order (see below)
 - `dcyberpunkgam.csproj` / `dcyberpunkgam.sln` — .NET project (Godot.NET.Sdk 4.7.2, net8.0)
 - `run.sh` — builds the C# then launches the game with the Mono Godot binary (the command the user runs to play)
-- `tests/flow_test.gd` — headless SceneTree functional test (menu → level → 8-combatant initiative → rounds → movement range → BFS reachability → **camera panning + clamping** → **mouse click-to-move** → once-per-turn + UNDO → enemy auto-move + auto turn-end → back). ~52 checks.
+- `tests/flow_test.gd` — headless SceneTree functional test (menu → level → 8-combatant initiative → rounds → movement range → BFS reachability → **camera panning + clamping** → **mouse click-to-move** (incl. click **behind** an obstacle/character via BFS detour) → once-per-turn + UNDO → enemy auto-move + auto turn-end → back). ~60 checks.
 - `tests/cutscene_test.gd` — headless functional test (menu → SCENE TEST → reveal, speaker alternation, highlight, back)
 - `tests/resolution_test.gd` — headless test: menu RESOLUTION button cycles 1280x720 → 1600x900 → 1920x1080 → back
-- `tests/combat_test.gd` — headless combat test (equipment + random weapon assignment, **circle-based shoot range (any direction, dx²+dy² ≤ range²) + LOS blocking by walls AND characters**, shooting-circle overlay, **weapon-based range/damage: pistol 4/2, rifle 6/3**, once-per-turn, WAIT, **enemy AI (move into shooting circle / hold + shoot)**, **BioStim heal**, death removes token + skips turns). ~70 checks.
+- `tests/combat_test.gd` — headless combat test (equipment + random weapon assignment, **circle-based shoot range (any direction, dx²+dy² ≤ range²) + LOS blocking by walls AND characters**, shooting-circle overlay, **weapon-based range/damage: pistol 4/2, rifle 6/3**, once-per-turn, WAIT, **enemy AI (move into shooting circle / hold + shoot)**, **BioStim heal**, death removes token + skips turns, **END TURN button in the actions menu**, action-menu screen clamping). ~100 checks.
 - `readme.me` — pre-existing file, untouched
 
 ## Cutscene (scene_test)
@@ -79,13 +79,21 @@ SCENE TEST button:
   `GetReachableCells()` that returned `Vector2I[]` — the array didn't export
   cleanly to GDScript, so it's a `bool` now.)
 - **Character movement is MOUSE-ONLY now.** Clicking a reachable tile jumps
-  there (BFS) via `OnBoardGuiInput` → `TryMoveToward`. The first move sets
+  there (BFS) via `OnBoardGuiInput` → `TryBoardClick` → `TryMoveToward`.
+  `TryBoardClick` resolves the board-local click with a single **inverse iso
+  projection** (`gx=floor((X+2Y)/T)`, `gy=floor((-X+2Y)/T)` — the exact
+  inverse of the cell-center forward projection) to the grid cell,
+  so clicks land in the cell the player sees even at cell edges. Clicking a
+  reachable tile (even **behind** an obstacle/character, as long as a BFS
+  detour stays within movement range) moves there. The first move sets
   `_movedThisTurn`; subsequent moves that turn are ignored. **UNDO** (button
   or `UndoMove()`) restores the turn-start cell and re-arms the move — allowed
   once, before END TURN. The reachable set is frozen to the turn-start
   position after a move (not recomputed from the new position) so the full
   range stays valid for the rest of the turn. (WASD no longer moves tokens —
   it now pans the camera, see below. The old `_Input` handler was removed.)
+  Tests emit clicks at `level.IsoCellCenter(Vector2i(x, y))` — the forward
+  cell-center projection — so headless click tests resolve to the exact cell.
 - **Isometric projection.** `level_01` is 2:1 iso. The `Board` Control holds
   an `Iso` Node2D child with a skew `Transform2D(X=(.5,.25), Y=(-.5,.25))`.
   Everything that must look skewed (floor, walls, highlights, tokens, range
@@ -143,9 +151,15 @@ SCENE TEST button:
   `_movedThisTurn` for the move) but neither blocks the other. So shoot-then-
   move, move-then-shoot, or just one of them all work. The **actions menu**
   (bottom-left panel: name on top, an equipment readout line, SHOOT / MOVE /
-  WAIT / BIOSTIM buttons; clamped on screen via `ClampActionMenu()`) shows the
-  buttons as disabled once their path is spent. Mode switching is free. UNDO
-  re-arms both paths.
+  WAIT / BIOSTIM buttons, and an **END TURN** button on the same row; clamped
+  on screen via `ClampActionMenu()`) shows the buttons as disabled once their
+  path is spent. Mode switching is free. UNDO re-arms both paths.
+- **HUD layout**: the debug/info panel (round/turn, per-char initiative,
+  move-range readout, END TURN / UNDO / BACK buttons) is a `PanelContainer`
+  pinned to the **top-right** corner (`Center/Panel` — `Center` is a plain
+  full-rect `Control`, NOT a CenterContainer: a CenterContainer re-centers
+  children and silently overrides the panel's anchors). Small font, ~408px
+  wide × 138px tall. The big center title label was removed.
 - **Weapons** (`Weapon.cs`): the equipped weapon drives the shoot mechanic —
   the shoot range is a **CIRCLE**: any cell with
   `dx*dx + dy*dy <= Weapon.Range^2` (distance 1..range, **any direction**)
@@ -249,9 +263,9 @@ binary. Build the C# first.
 GODOT=/home/bigal/Applications/GodotMono/Godot_v4.7.2-stable_mono_linux_x86_64/Godot_v4.7.2-stable_mono_linux.x86_64
 $GODOT --headless --path . --import                    # clean import check
 $GODOT --headless --path . --quit-after 120            # smoke run (main scene = menu)
-$GODOT --headless --path . -s res://tests/flow_test.gd      # functional flow test (52 checks)
+$GODOT --headless --path . -s res://tests/flow_test.gd      # functional flow test (60 checks)
 $GODOT --headless --path . -s res://tests/cutscene_test.gd  # cutscene test (14 checks)
-$GODOT --headless --path . -s res://tests/combat_test.gd    # combat: weapons/items/enemy AI/shoot/death/actions menu (61 checks)
+$GODOT --headless --path . -s res://tests/combat_test.gd    # combat: weapons/items/enemy AI/shoot/death/actions menu (100 checks)
 ```
 Headless alone is NOT enough for UI: it never renders, so off-screen controls
 are invisible to it. There's a real Xorg at `DISPLAY=:0.0` (no Xvfb/xdotool here).

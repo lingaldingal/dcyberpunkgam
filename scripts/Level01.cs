@@ -171,6 +171,7 @@ public partial class Level01 : Control
     private Button _moveButton = null!;
     private Button _waitButton = null!;
     private Button _healButton = null!;
+    private Button _endTurnMenuButton = null!;
 
     // Enemy auto-move: armed when an enemy is active; fires after a short delay.
     private bool _enemyMoveArmed;
@@ -201,10 +202,30 @@ public partial class Level01 : Control
         _board.GuiInput += OnBoardGuiInput;
         foreach (var name in new[]
         {
-            "Center", "Center/Panel", "Center/Panel/Title",
+            "Center", "Center/Panel",
             "Center/Panel/HUD", "Center/Panel/HUD/Turn", "Center/Panel/HUD/Info",
         })
             GetNode<Control>(name).MouseFilter = MouseFilterEnum.Ignore;
+        // The top-right debug panel is a plain VBox on the board; give it a
+        // translucent background so the text stays readable over any tile.
+        var hudPanel = GetNode<Control>("Center/Panel");
+        hudPanel.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+        {
+            BgColor = new Color(0.05f, 0.06f, 0.09f, 0.65f),
+            BorderColor = new Color(0.35f, 0.6f, 0.9f, 0.35f),
+            BorderWidthLeft = 1,
+            BorderWidthTop = 1,
+            BorderWidthRight = 1,
+            BorderWidthBottom = 1,
+            CornerRadiusTopLeft = 6,
+            CornerRadiusTopRight = 6,
+            CornerRadiusBottomLeft = 6,
+            CornerRadiusBottomRight = 6,
+            ContentMarginLeft = 8,
+            ContentMarginTop = 6,
+            ContentMarginRight = 8,
+            ContentMarginBottom = 6,
+        });
         AssignStartingGear();
         // BuildBoard reads each combatant's HP for the grid's HP readouts, so
         // the turn system (which owns the live combatant list) must exist first.
@@ -793,14 +814,12 @@ public partial class Level01 : Control
     private void TryBoardClick(Vector2 boardPos)
     {
         // Board clicks arrive in ISO board space (the board is a Control, so
-        // GuiInput coordinates are board-local). The existing functional
-        // tests emit clicks in LOGICAL cell-center coordinates instead
-        // (x*TILE + TILE/2, y*TILE + TILE/2), so accept both: a point within
-        // a few px of a logical cell center is snapped to that cell (the
-        // tests); everything else is inverse-projected as an iso point.
-        var logical = new Vector2I((int)(boardPos.X / TileSize), (int)(boardPos.Y / TileSize));
-        var center = new Vector2(logical.X * TileSize + TileSize / 2f, logical.Y * TileSize + TileSize / 2f);
-        Vector2I cell = (boardPos - center).Length() <= 6f ? logical : CellFromIso(boardPos);
+        // GuiInput coordinates are board-local). A single inverse projection
+        // maps them back to a grid cell — no snapping to logical coordinates
+        // (that hijacked clicks near logical cell centers to the wrong iso
+        // cell, which broke "move around the obstacle" clicks). Tests emit
+        // clicks at IsoCellCenter, which this projects back exactly.
+        var cell = CellFromIso(boardPos);
         if (_actionMode == ActionMode.Shoot)
             TryShootAt(cell);
         else
@@ -1391,6 +1410,14 @@ public partial class Level01 : Control
         actions.AddChild(_waitButton);
         actions.AddChild(_healButton);
         vbox.AddChild(actions);
+        // Second row: END TURN, so the turn can be closed without reaching for
+        // the top-right debug panel.
+        var turnRow = new HBoxContainer { Name = "TurnRow" };
+        turnRow.AddThemeConstantOverride("separation", 8);
+        _endTurnMenuButton = new Button { Name = "EndTurn", Text = "END TURN", CustomMinimumSize = new Vector2(160, 34) };
+        _endTurnMenuButton.Pressed += OnEndTurnPressed;
+        turnRow.AddChild(_endTurnMenuButton);
+        vbox.AddChild(turnRow);
         _actionMenu.AddChild(vbox);
         AddChild(_actionMenu);
     }

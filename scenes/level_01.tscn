@@ -22,56 +22,56 @@ anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 
-[node name="Center" type="CenterContainer" parent="."]
+[node name="Center" type="Control" parent="."]
 layout_mode = 1
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 
-[node name="Panel" type="VBoxContainer" parent="Center"]
-layout_mode = 2
-custom_minimum_size = Vector2(800, 0)
-theme_override_constants/separation = 16
-
-[node name="Title" type="Label" parent="Center/Panel"]
-layout_mode = 2
-theme_override_font_sizes/font_size = 40
-text = "LEVEL 01 — WET MARKET"
-horizontal_alignment = 1
-autowrap_mode = 3
+[node name="Panel" type="PanelContainer" parent="Center"]
+layout_mode = 0
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -420.0
+offset_top = 12.0
+offset_right = -12.0
+offset_bottom = 150.0
+grow_horizontal = 0
 
 [node name="HUD" type="VBoxContainer" parent="Center/Panel"]
 layout_mode = 2
-theme_override_constants/separation = 4
+theme_override_constants/separation = 2
 
 [node name="Turn" type="Label" parent="Center/Panel/HUD"]
 layout_mode = 2
-theme_override_font_sizes/font_size = 24
+theme_override_font_sizes/font_size = 14
 text = "TURN: "
-horizontal_alignment = 1
+horizontal_alignment = 2
 autowrap_mode = 3
 
 [node name="Info" type="Label" parent="Center/Panel/HUD"]
 layout_mode = 2
+theme_override_font_sizes/font_size = 11
 text = ""
-horizontal_alignment = 1
+horizontal_alignment = 2
 autowrap_mode = 3
 
 [node name="Actions" type="HBoxContainer" parent="Center/Panel"]
 layout_mode = 2
-theme_override_constants/separation = 16
+theme_override_constants/separation = 8
 
 [node name="EndTurn" type="Button" parent="Center/Panel/Actions"]
 layout_mode = 2
-custom_minimum_size = Vector2(180, 48)
+custom_minimum_size = Vector2(110, 30)
 text = "END TURN"
 
 [node name="Undo" type="Button" parent="Center/Panel/Actions"]
 layout_mode = 2
-custom_minimum_size = Vector2(120, 48)
+custom_minimum_size = Vector2(80, 30)
 text = "UNDO"
 
 [node name="Back" type="Button" parent="Center/Panel/Actions"]
 layout_mode = 2
-custom_minimum_size = Vector2(180, 48)
+custom_minimum_size = Vector2(110, 30)
 text = "BACK TO MENU"

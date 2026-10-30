@@ -221,10 +221,12 @@ func _run_flow() -> void:
 
 	# --- Click-to-move: mouse-only. Click a reachable tile, Vex jumps there. ---
 	# Vex is at (1,1). Click (0,6): 6 tiles via left column, reachable.
+	# Board clicks arrive in ISO board space, so tests emit them at the cell's
+	# iso center (IsoCellCenter) — the level inverse-projects them exactly.
 	var click := InputEventMouseButton.new()
 	click.button_index = MOUSE_BUTTON_LEFT
 	click.pressed = true
-	click.position = Vector2(0 * TILE + TILE / 2, 6 * TILE + TILE / 2)
+	click.position = level.IsoCellCenter(Vector2i(0, 6))
 	board.gui_input.emit(click)
 	await process_frame
 	_check(p0.position == Vector2(0, 6 * TILE), "click moved Vex to (0,6)")
@@ -234,10 +236,23 @@ func _run_flow() -> void:
 	var click_again := InputEventMouseButton.new()
 	click_again.button_index = MOUSE_BUTTON_LEFT
 	click_again.pressed = true
-	click_again.position = Vector2(0 * TILE + TILE / 2, 5 * TILE + TILE / 2)
+	click_again.position = level.IsoCellCenter(Vector2i(0, 5))
 	board.gui_input.emit(click_again)
 	await process_frame
 	_check(p0.position == Vector2(0, 6 * TILE), "second click ignored (once per turn)")
+
+	# --- Click BEHIND a character: the straight route is blocked by Rook at
+	# (1,2), but (1,3) is reachable with a 4-step detour (via the x=0 lane),
+	# so the click must land there, not be swallowed by the obstacle.
+	level.UndoMove()
+	await process_frame
+	var click_behind := InputEventMouseButton.new()
+	click_behind.button_index = MOUSE_BUTTON_LEFT
+	click_behind.pressed = true
+	click_behind.position = level.IsoCellCenter(Vector2i(1, 3))
+	board.gui_input.emit(click_behind)
+	await process_frame
+	_check(p0.position == Vector2(1 * TILE, 3 * TILE), "click behind Rook moved Vex to (1,3) via detour")
 
 	# --- UNDO restores the turn-start cell and re-arms the move. ---
 	level.UndoMove()
@@ -248,7 +263,7 @@ func _run_flow() -> void:
 	var click2 := InputEventMouseButton.new()
 	click2.button_index = MOUSE_BUTTON_LEFT
 	click2.pressed = true
-	click2.position = Vector2(0 * TILE + TILE / 2, 6 * TILE + TILE / 2)
+	click2.position = level.IsoCellCenter(Vector2i(0, 6))
 	board.gui_input.emit(click2)
 	await process_frame
 	_check(p0.position == Vector2(0, 6 * TILE), "Vex moved to (0,6) after undo")

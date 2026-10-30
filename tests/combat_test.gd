@@ -90,6 +90,22 @@ func _run() -> void:
 	_check(tiny_pos.x >= 0.0 and tiny_pos.y >= 0.0,
 			"menu stays on screen on a tiny viewport (got %s)" % str(tiny_pos))
 
+	# --- END TURN in the actions menu: pressing it advances the turn, same as
+	# the top-right debug panel's END TURN.
+	# Roll order [1..]: Brute, Rook, Slick, Vex, Gutter, Kaito, Mira, Wisp.
+	# Vex -> menu END TURN -> Gutter, and Gutter (enemy) auto-moves and
+	# auto-ends within ~12 frames, landing the turn on Kaito.
+	level.ForceCurrent("Vex")
+	await process_frame
+	level.get_node("ActionMenu/VBox/TurnRow/EndTurn").pressed.emit()
+	for i in 20:
+		await process_frame
+	_check(level.GetCurrentName() == "Kaito",
+			"menu END TURN advances the turn (Vex -> Gutter auto -> Kaito, got '%s')"
+			% level.GetCurrentName())
+	level.ForceCurrent("Vex")
+	await process_frame
+
 	# --- Equipment: everyone has head + body gear + a pistol/rifle. ---
 	_check(level.GetEquipment("Vex") == "Pistol · Ballistic Cap · Weave Vest",
 			"Vex equipped with basic gear + pistol (got '%s')" % level.GetEquipment("Vex"))
@@ -246,7 +262,7 @@ func _run() -> void:
 	var click_rifle := InputEventMouseButton.new()
 	click_rifle.button_index = MOUSE_BUTTON_LEFT
 	click_rifle.pressed = true
-	click_rifle.position = Vector2(15 * TILE + TILE / 2, 1 * TILE + TILE / 2)
+	click_rifle.position = level.IsoCellCenter(Vector2i(15, 1))
 	board.gui_input.emit(click_rifle)
 	await process_frame
 	_check(level.GetHitPoints("Wisp") == 9, "rifle shot deals 3 damage (got %d HP, was 12)" % level.GetHitPoints("Wisp"))
@@ -290,7 +306,7 @@ func _run() -> void:
 	var click_wrong_cell := InputEventMouseButton.new()
 	click_wrong_cell.button_index = MOUSE_BUTTON_LEFT
 	click_wrong_cell.pressed = true
-	click_wrong_cell.position = Vector2(12 * TILE + TILE / 2, 4 * TILE + TILE / 2)
+	click_wrong_cell.position = level.IsoCellCenter(Vector2i(12, 4))
 	board.gui_input.emit(click_wrong_cell)
 	await process_frame
 	_check(level.GetHitPoints("Wisp") == 9, "clicking a non-target in shoot mode deals no damage (Wisp at 9 from rifle test)")
@@ -299,7 +315,7 @@ func _run() -> void:
 	var click_shoot := InputEventMouseButton.new()
 	click_shoot.button_index = MOUSE_BUTTON_LEFT
 	click_shoot.pressed = true
-	click_shoot.position = Vector2(13 * TILE + TILE / 2, 1 * TILE + TILE / 2)
+	click_shoot.position = level.IsoCellCenter(Vector2i(13, 1))
 	board.gui_input.emit(click_shoot)
 	await process_frame
 	_check(level.GetHitPoints("Wisp") == 7, "shoot deals 2 damage (got %d HP, was 9)" % level.GetHitPoints("Wisp"))
@@ -313,7 +329,7 @@ func _run() -> void:
 	var click_diag := InputEventMouseButton.new()
 	click_diag.button_index = MOUSE_BUTTON_LEFT
 	click_diag.pressed = true
-	click_diag.position = Vector2(9 * TILE + TILE / 2, 5 * TILE + TILE / 2)
+	click_diag.position = level.IsoCellCenter(Vector2i(9, 5))
 	board.gui_input.emit(click_diag)
 	await process_frame
 	_check(level.GetHitPoints("Wisp") == 7, "click at empty south target does no damage")
@@ -328,7 +344,7 @@ func _run() -> void:
 	var click_move := InputEventMouseButton.new()
 	click_move.button_index = MOUSE_BUTTON_LEFT
 	click_move.pressed = true
-	click_move.position = Vector2(5 * TILE + TILE / 2, 1 * TILE + TILE / 2)
+	click_move.position = level.IsoCellCenter(Vector2i(5, 1))
 	board.gui_input.emit(click_move)
 	await process_frame
 	_check(level.HasMovedThisTurn(), "Vex moved to (5,1) this turn")
@@ -343,7 +359,7 @@ func _run() -> void:
 	var click_shoot_moved := InputEventMouseButton.new()
 	click_shoot_moved.button_index = MOUSE_BUTTON_LEFT
 	click_shoot_moved.pressed = true
-	click_shoot_moved.position = Vector2(13 * TILE + TILE / 2, 1 * TILE + TILE / 2)
+	click_shoot_moved.position = level.IsoCellCenter(Vector2i(13, 1))
 	board.gui_input.emit(click_shoot_moved)
 	await process_frame
 	_check(level.GetHitPoints("Wisp") == 7,
@@ -357,7 +373,7 @@ func _run() -> void:
 	var click_move2 := InputEventMouseButton.new()
 	click_move2.button_index = MOUSE_BUTTON_LEFT
 	click_move2.pressed = true
-	click_move2.position = Vector2(9 * TILE + TILE / 2, 1 * TILE + TILE / 2)
+	click_move2.position = level.IsoCellCenter(Vector2i(9, 1))
 	board.gui_input.emit(click_move2)
 	await process_frame
 	_check(level.GetTokenCell("Vex") == Vector2i(9, 1), "Vex moved back to (9,1)")
@@ -366,7 +382,7 @@ func _run() -> void:
 	var click_shoot_moved2 := InputEventMouseButton.new()
 	click_shoot_moved2.button_index = MOUSE_BUTTON_LEFT
 	click_shoot_moved2.pressed = true
-	click_shoot_moved2.position = Vector2(13 * TILE + TILE / 2, 1 * TILE + TILE / 2)
+	click_shoot_moved2.position = level.IsoCellCenter(Vector2i(13, 1))
 	board.gui_input.emit(click_shoot_moved2)
 	await process_frame
 	_check(level.GetHitPoints("Wisp") == 5,
@@ -380,7 +396,7 @@ func _run() -> void:
 	var click_after_wait := InputEventMouseButton.new()
 	click_after_wait.button_index = MOUSE_BUTTON_LEFT
 	click_after_wait.pressed = true
-	click_after_wait.position = Vector2(13 * TILE + TILE / 2, 1 * TILE + TILE / 2)
+	click_after_wait.position = level.IsoCellCenter(Vector2i(13, 1))
 	board.gui_input.emit(click_after_wait)
 	await process_frame
 	_check(level.GetHitPoints("Wisp") == 5, "WAIT consumes the action (no shot after)")
@@ -417,7 +433,7 @@ func _run() -> void:
 		var click := InputEventMouseButton.new()
 		click.button_index = MOUSE_BUTTON_LEFT
 		click.pressed = true
-		click.position = Vector2(12 * TILE + TILE / 2, 1 * TILE + TILE / 2)
+		click.position = level.IsoCellCenter(Vector2i(12, 1))
 		board.gui_input.emit(click)
 		await process_frame
 		end_turn.pressed.emit()
