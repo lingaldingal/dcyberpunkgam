@@ -25,7 +25,7 @@ public partial class IsoGrid : Node2D
     // Cells the active party member can throw a grenade to (yellow diamonds).
     public IEnumerable<Vector2I> Grenadeable { get; set; } = new HashSet<Vector2I>();
     // The cross-shaped blast area of the hovered grenade target (5 cells),
-    // shown as a brighter preview while aiming.
+    // shown as a red cross preview while aiming.
     public IEnumerable<Vector2I> BlastCells { get; set; } = new HashSet<Vector2I>();
     // (x, y, hp text) per live token, drawn above the token's diamond.
     public List<(int X, int Y, string Text)> TokenLabels = new();
@@ -41,7 +41,9 @@ public partial class IsoGrid : Node2D
     private static readonly Color ShootHl = new(0.95f, 0.35f, 0.3f, 0.38f);
     private static readonly Color MeleeHl = new(0.98f, 0.62f, 0.2f, 0.42f);
     private static readonly Color GrenadeHl = new(0.95f, 0.9f, 0.3f, 0.30f);
-    private static readonly Color BlastHl = new(0.95f, 0.9f, 0.3f, 0.55f);
+    // The blast preview is a RED cross over the 5 blast cells while aiming
+    // (drawn after the yellow throw targets so it reads on top of them).
+    private static readonly Color BlastHl = new(0.95f, 0.30f, 0.25f, 0.60f);
     private static readonly Color HpText = new(0.9f, 0.95f, 1f);
 
     public void Rebuild() => QueueRedraw();

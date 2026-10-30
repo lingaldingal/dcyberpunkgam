@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using Godot;
 
 namespace Dcyberpunkgam;
@@ -155,16 +156,18 @@ public partial class Level01 : Control
     };
 
     // Roster: party (0-3) then enemies (4-7). Token index == roster index.
+    // Finesse (accuracy) is the third int: it feeds the hit chance (see
+    // HitChance) — the D&D-style bonus is +1% per 2 points above 10.
     private static readonly Character[] Roster =
     {
-        new("Vex", new Color(0.85f, 0.25f, 0.35f), 12, 11, false),
-        new("Kaito", new Color(0.25f, 0.75f, 0.9f), 10, 9, false),
-        new("Rook", new Color(0.4f, 0.85f, 0.45f), 15, 12, false),
-        new("Mira", new Color(0.95f, 0.75f, 0.25f), 10, 8, false),
-        new("Gutter", new Color(0.6f, 0.3f, 0.8f), 11, 10, true),
-        new("Slick", new Color(0.9f, 0.4f, 0.7f), 13, 13, true),
-        new("Brute", new Color(0.5f, 0.2f, 0.2f), 16, 12, true),
-        new("Wisp", new Color(0.7f, 0.7f, 0.9f), 9, 7, true),
+        new("Vex", new Color(0.85f, 0.25f, 0.35f), 12, 11, 12, false),
+        new("Kaito", new Color(0.25f, 0.75f, 0.9f), 10, 9, 11, false),
+        new("Rook", new Color(0.4f, 0.85f, 0.45f), 15, 12, 10, false),
+        new("Mira", new Color(0.95f, 0.75f, 0.25f), 10, 8, 13, false),
+        new("Gutter", new Color(0.6f, 0.3f, 0.8f), 11, 10, 9, true),
+        new("Slick", new Color(0.9f, 0.4f, 0.7f), 13, 13, 12, true),
+        new("Brute", new Color(0.5f, 0.2f, 0.2f), 16, 12, 11, true),
+        new("Wisp", new Color(0.7f, 0.7f, 0.9f), 9, 7, 8, true),
     };
 
     // Starting cells, one per roster entry.
@@ -184,6 +187,15 @@ public partial class Level01 : Control
     // in the skewed Iso layer while the mouse hovers a reachable tile.
     private PathPreview _pathPreview = null!;
     private readonly System.Random _rng = new();
+
+    // Hit/miss: when non-null, every attack roll uses this forced outcome
+    // (test hook — see SetForcedHit). Null = roll normally.
+    private bool? _forcedHit;
+    // The last attack's outcome, shown in the action menu ("HIT"/"MISS").
+    private string _lastAttackResult = "";
+    // Rolling combat log shown in the top-right info panel (most recent last).
+    private readonly List<string> _combatLog = new();
+    private const int CombatLogMaxLines = 6;
 
     private TurnSystem _turns = null!;
     private bool _turnActive;
@@ -247,8 +259,10 @@ public partial class Level01 : Control
     private Control _board = null!;
     private Label _turnLabel = null!;
     private Label _infoLabel = null!;
-    private Button _endTurnButton = null!;
-    private Button _undoButton = null!;
+    // The actions menu's UNDO button (built in BuildActionMenu).
+    private Button _undoMenuButton = null!;
+    // The BACK TO MENU button pinned to the top-left corner (built in
+    // BuildTopLeftBackButton).
     private Button _backButton = null!;
 
     public override void _Ready()
@@ -313,16 +327,14 @@ public partial class Level01 : Control
         _turns.StartEncounter();
         BuildBoard();
         BuildActionMenu();
+        BuildTopLeftBackButton();
         InitializeCamera();
 
+        // The top-right panel is now a pure console (turn line + rolling log);
+        // the END TURN / UNDO / BACK buttons live in the actions menu and the
+        // top-left corner, so only the two labels are read from the scene.
         _turnLabel = GetNode<Label>("Center/Panel/HUD/Turn");
         _infoLabel = GetNode<Label>("Center/Panel/HUD/Info");
-        _endTurnButton = GetNode<Button>("Center/Panel/Actions/EndTurn");
-        _undoButton = GetNode<Button>("Center/Panel/Actions/Undo");
-        _backButton = GetNode<Button>("Center/Panel/Actions/Back");
-        _endTurnButton.Pressed += OnEndTurnPressed;
-        _undoButton.Pressed += OnUndoPressed;
-        _backButton.Pressed += OnBackPressed;
 
         SetActive();
     }
@@ -680,12 +692,16 @@ public partial class Level01 : Control
             return;
         _hoverCell = cell;
         RefreshPathPreview();
+        RefreshBlastPreview();
+        _grid.Rebuild();
     }
 
     private void OnBoardMouseExited()
     {
         _hoverCell = null;
         RefreshPathPreview();
+        RefreshBlastPreview();
+        _grid.Rebuild();
     }
 
     // (Re)build the hover path overlay from the current state. Called on every
@@ -935,6 +951,14 @@ public partial class Level01 : Control
     public Vector2[] GetHoverPathPoints()
         => _pathPreview == null ? new Vector2[0] : _pathPreview.Points.ToArray();
 
+    /// <summary>Test hook: the blast cells currently shown in the red cross
+    /// preview (empty outside grenade mode / off-target hovers).</summary>
+    public string GetBlastCells()
+    {
+        var cells = _grid.BlastCells.OrderBy(c => c.Y).ThenBy(c => c.X).ToList();
+        return string.Join(" ", cells.Select(c => $"{c.X},{c.Y}"));
+    }
+
     /// <summary>
     /// Test hook: the move-mode path preview state —
     /// [lineVisible, endVisible, endX, endY].
@@ -1096,6 +1120,46 @@ public partial class Level01 : Control
         return false;
     }
 
+    /// <summary>Test hook: the named combatant's Finesse (accuracy) stat.</summary>
+    public int GetFinesse(string name)
+    {
+        int index = IndexOf(name);
+        return index < 0 ? 0 : Roster[index].Finesse;
+    }
+
+    /// <summary>
+    /// Test hook: the hit chance (percent) the named attacker has against the
+    /// named target — lets the test assert the D&amp;D-style formula without
+    /// rolling.
+    /// </summary>
+    public int GetHitChance(string attackerName, string targetName)
+    {
+        int a = IndexOf(attackerName);
+        int t = IndexOf(targetName);
+        if (a < 0 || t < 0)
+            return 0;
+        return HitChance(Roster[a], Roster[t]);
+    }
+
+    /// <summary>
+    /// Test hook: force every subsequent attack's outcome instead of rolling.
+    /// The binding can't take a <see cref="bool?"/>, so this takes an int:
+    /// -1 = roll normally, 0 = force a miss, 1 = force a hit.
+    /// </summary>
+    public void SetForcedHit(int v)
+    {
+        _forcedHit = v < 0 ? null : (bool?)(v != 0);
+    }
+
+    /// <summary>Test hook: the last attack's outcome — "HIT", "MISS" or "".</summary>
+    public string GetLastAttackResult() => _lastAttackResult;
+
+    /// <summary>
+    /// Test hook: the top-right info panel text (initiative line + the rolling
+    /// combat log, most recent action last).
+    /// </summary>
+    public string GetInfoText() => _infoLabel == null ? "" : _infoLabel.Text;
+
     /// <summary>Test hook: is the named cell a valid grenade throw target?</summary>
     public bool IsGrenadeTarget(int x, int y) => _grenadeTargets.Contains(new Vector2I(x, y));
 
@@ -1171,7 +1235,7 @@ public partial class Level01 : Control
         var c = _turns.Current;
         if (c.UseItem(Item.BioStim))
         {
-            _infoLabel.Text = $"{c.Name} uses a BioStim and recovers {Item.BioStim.HealValue} HP ({c.HitPoints} HP)";
+            LogCombat($"{c.Name} uses a BioStim and recovers {Item.BioStim.HealValue} HP ({c.HitPoints} HP)");
             RefreshTokenHp(_turns.CurrentIndex);
             MarkActionUsed();
             CloseItemsMenu();
@@ -1227,15 +1291,15 @@ public partial class Level01 : Control
             if (victim.IsDead)
                 KillToken(i);
         }
-        _infoLabel.Text = hits.Count == 0
+        LogCombat(hits.Count == 0
             ? $"{thrower.Name} throws a Grenade; it hits nothing."
-            : $"{thrower.Name} throws a Grenade on {cell.X},{cell.Y} for {Item.Grenade.BlastDamage} dmg — {string.Join(", ", hits)}";
+            : $"{thrower.Name} throws a Grenade on {cell.X},{cell.Y} for {Item.Grenade.BlastDamage} dmg — {string.Join(", ", hits)}");
     }
 
     // Rebuild the grenade throw-target set for the active combatant from its
-    // CURRENT position: every walkable cell within the grenade's ThrowRange
-    // (Chebyshev distance, so it's a square of side 2*ThrowRange+1 centered on
-    // the thrower — "throw up to N squares away in any direction").
+    // CURRENT position: every walkable cell inside the grenade's throwing
+    // CIRCLE (dx^2 + dy^2 <= ThrowRange^2, any direction — same circle rule
+    // as the shoot range; the thrower's own cell is throwable too).
     private void ComputeGrenadeTargets()
     {
         _grenadeTargets.Clear();
@@ -1247,6 +1311,8 @@ public partial class Level01 : Control
         {
             for (int dx = -range; dx <= range; dx++)
             {
+                if (dx * dx + dy * dy > range * range)
+                    continue;
                 var cell = new Vector2I(from.X + dx, from.Y + dy);
                 if (cell.X < 0 || cell.X >= GridWidth || cell.Y < 0 || cell.Y >= GridHeight)
                     continue;
@@ -1271,7 +1337,7 @@ public partial class Level01 : Control
         // combatant ended their turn in shoot mode (or used WAIT there).
         _actionMode = ActionMode.Move;
         _turnLabel.Text = $"ROUND {_turns.Round} — TURN: {_turns.Current.Name}";
-        _infoLabel.Text = BuildInitiativeInfo();
+        RefreshInfoPanel();
         // Active token glows full-bright, the rest dim (modulate also covers
         // the token's name label).
         for (int i = 0; i < _tokens.Count; i++)
@@ -1293,10 +1359,37 @@ public partial class Level01 : Control
         for (int i = 0; i < _turns.Combatants.Count; i++)
         {
             var c = _turns.Combatants[i];
-            parts.Add($"{c.Name} {c.Agility}+{_turns.Roll[i]}{(c.IsEnemy ? " (E)" : "")}");
+            parts.Add($"{c.Name} Agi {c.Agility}+{_turns.Roll[i]} · Fin {c.Finesse}{(c.IsEnemy ? " (E)" : "")}");
         }
         return string.Join(" · ", parts)
-            + "  —  initiative d5 + Agility sets order (high first) · move = 5 + Agi/2 · per turn: ONE action (SHOOT / WAIT / BioStim) + ONE move · shoot = weapon's range CIRCLE (pistol 4 / rifle 6), no shooting through walls or characters, weapon dmg (2 / 3) · HP = 5 + Con · WASD pans the map · END TURN";
+            + "  —  initiative d5 + Agility sets order (high first) · move = 5 + Agi/2 · per turn: ONE action (SHOOT / WAIT / BioStim) + ONE move · shoot = weapon's range CIRCLE (pistol 4 / rifle 6), no shooting through walls or characters, weapon dmg (2 / 3) · HP = 5 + Con · attacks roll to hit (65% base + Finesse, - target Agi) · WASD pans the map · END TURN";
+    }
+
+    /// <summary>
+    /// Append a line to the rolling combat log and refresh the info panel.
+    /// The log keeps the most recent <see cref="CombatLogMaxLines"/> lines so
+    /// the panel shows the last few actions (hits, misses, heals, throws).
+    /// </summary>
+    private void LogCombat(string line)
+    {
+        _combatLog.Add(line);
+        while (_combatLog.Count > CombatLogMaxLines)
+            _combatLog.RemoveAt(0);
+        RefreshInfoPanel();
+    }
+
+    /// <summary>
+    /// Rebuild the top-right info panel text: the initiative/legend line on
+    /// top, then the rolling combat log (most recent action last).
+    /// </summary>
+    private void RefreshInfoPanel()
+    {
+        if (_infoLabel == null)
+            return;
+        var sb = new System.Text.StringBuilder(BuildInitiativeInfo());
+        for (int i = 0; i < _combatLog.Count; i++)
+            sb.Append("\n").Append(_combatLog[i]);
+        _infoLabel.Text = sb.ToString();
     }
 
     // BFS: shortest-path distance from <start> to every reachable tile, treating
@@ -1399,19 +1492,62 @@ public partial class Level01 : Control
         MarkActionUsed();
     }
 
-    // Common shot application: weapon damage on the target, HUD line, token
-    // HP update, death removal. Shared by the party's shoot action and the
-    // enemy AI.
+    // Base hit chance for every combatant (D&D-style: 65% at 10 Finesse).
+    private const int BaseHitChance = 65;
+
+    /// <summary>
+    /// Hit chance (percent) for <paramref name="attacker"/> landing on
+    /// <paramref name="target"/>: 65% base, +1% per 2 Finesse above 10
+    /// (attacker's accuracy), -1% per 2 target Agility above 10 (harder to
+    /// hit). Clamped to [5, 95] so no one is guaranteed to hit or miss.
+    /// </summary>
+    public int HitChance(Character attacker, Character target)
+    {
+        int chance = BaseHitChance
+            + Character.DndBonus(attacker.Finesse)
+            - Character.DndBonus(target.Agility);
+        return Math.Clamp(chance, 5, 95);
+    }
+
+    /// <summary>
+    /// Roll the next attack: returns true on a hit. Uses <see
+    /// cref="_forcedHit"/> when set (test hook), otherwise a d100 roll
+    /// against the hit chance.
+    /// </summary>
+    private bool RollHit(Character attacker, Character target)
+    {
+        if (_forcedHit.HasValue)
+            return _forcedHit.Value;
+        int chance = HitChance(attacker, target);
+        // d100: 1..100; hit if the roll is <= the chance.
+        int roll = _rng.Next(1, 101);
+        return roll <= chance;
+    }
+
+    // Common shot application: hit roll, weapon damage on a hit, console
+    // line, token HP update, death removal. Shared by the party's shoot
+    // action and the enemy AI.
     private void ApplyShot(int shooterIndex, int targetIndex)
     {
         var shooter = _turns.Combatants[shooterIndex];
         var target = _turns.Combatants[targetIndex];
-        int damage = shooter.Equipment.Weapon.Damage;
-        target.HitPoints -= damage;
-        _infoLabel.Text = $"{shooter.Name} shoots {target.Name} with the {shooter.Equipment.Weapon.Name} for {damage} ({target.HitPoints} HP left)";
-        RefreshTokenHp(targetIndex);
-        if (target.IsDead)
-            KillToken(targetIndex);
+        int chance = HitChance(shooter, target);
+        bool hit = RollHit(shooter, target);
+        _lastAttackResult = hit ? "HIT" : "MISS";
+        if (hit)
+        {
+            int damage = shooter.Equipment.Weapon.Damage;
+            target.HitPoints -= damage;
+            LogCombat($"{shooter.Name} shoots {target.Name} with the {shooter.Equipment.Weapon.Name} — HIT ({chance}%), {damage} dmg ({target.HitPoints} HP left)");
+            RefreshTokenHp(targetIndex);
+            if (target.IsDead)
+                KillToken(targetIndex);
+        }
+        else
+        {
+            LogCombat($"{shooter.Name} shoots {target.Name} with the {shooter.Equipment.Weapon.Name} — MISS ({chance}%)");
+        }
+        UpdateActionMenu();
     }
 
     // Melee: the target must stand on one of the FOUR directly adjacent
@@ -1440,19 +1576,30 @@ public partial class Level01 : Control
         MarkActionUsed();
     }
 
-    // Common melee application: melee-weapon damage on the target, HUD line,
-    // token HP update, death removal. Shared by the player's melee action and
-    // the enemy AI.
+    // Common melee application: hit roll, melee-weapon damage on a hit,
+    // console line, token HP update, death removal. Shared by the player's
+    // melee action and the enemy AI.
     private void ApplyMelee(int attackerIndex, int targetIndex)
     {
         var attacker = _turns.Combatants[attackerIndex];
         var target = _turns.Combatants[targetIndex];
-        int damage = attacker.Equipment.MeleeWeapon.Damage;
-        target.HitPoints -= damage;
-        _infoLabel.Text = $"{attacker.Name} strikes {target.Name} with the {attacker.Equipment.MeleeWeapon.Name} for {damage} ({target.HitPoints} HP left)";
-        RefreshTokenHp(targetIndex);
-        if (target.IsDead)
-            KillToken(targetIndex);
+        int chance = HitChance(attacker, target);
+        bool hit = RollHit(attacker, target);
+        _lastAttackResult = hit ? "HIT" : "MISS";
+        if (hit)
+        {
+            int damage = attacker.Equipment.MeleeWeapon.Damage;
+            target.HitPoints -= damage;
+            LogCombat($"{attacker.Name} strikes {target.Name} with the {attacker.Equipment.MeleeWeapon.Name} — HIT ({chance}%), {damage} dmg ({target.HitPoints} HP left)");
+            RefreshTokenHp(targetIndex);
+            if (target.IsDead)
+                KillToken(targetIndex);
+        }
+        else
+        {
+            LogCombat($"{attacker.Name} strikes {target.Name} with the {attacker.Equipment.MeleeWeapon.Name} — MISS ({chance}%)");
+        }
+        UpdateActionMenu();
     }
 
     // One action per turn: once the active combatant has moved, shot or waited,
@@ -1468,7 +1615,7 @@ public partial class Level01 : Control
     {
         if (!_turnActive || _actionUsed)
             return;
-        _infoLabel.Text = $"{_turns.Current.Name} waits.";
+        LogCombat($"{_turns.Current.Name} waits.");
         MarkActionUsed();
     }
 
@@ -1845,7 +1992,10 @@ public partial class Level01 : Control
             _rangeCircle = new Polygon2D
             {
                 Name = "RangeCircle",
-                Color = new Color(0.95f, 0.45f, 0.35f, 0.10f),
+                // Fully transparent: the red shootable squares are the range
+                // cue now. The node still tracks its geometry so
+                // GetRangeCircle() keeps reporting the correct range box.
+                Color = new Color(0.95f, 0.45f, 0.35f, 0f),
                 ZIndex = 1, // above the floor grid, under the tokens
             };
             _iso.AddChild(_rangeCircle);
@@ -1893,10 +2043,23 @@ public partial class Level01 : Control
         _grid.Shootable = shootView ? _shootTargets : new HashSet<Vector2I>();
         _grid.Meleeable = meleeView ? _meleeTargets : new HashSet<Vector2I>();
         _grid.Grenadeable = grenadeView ? _grenadeTargets : new HashSet<Vector2I>();
-        // While aiming a grenade, show the cross-shaped blast area (the
-        // hovered cell + its four orthogonal neighbours) as a brighter
-        // preview; empty otherwise.
+        RefreshBlastPreview();
+        RefreshGridLabels();
+        _grid.Rebuild();
+        // Any change that affects mode/move/turn state also changes what the
+        // hover path preview may show.
+        RefreshPathPreview();
+    }
+
+    // While aiming a grenade, the 5 blast cells of the hovered yellow target
+    // (the landing cell + its four orthogonal neighbours) are shown as a red
+    // cross; empty in every other situation. Called on hover changes and on
+    // every RefreshHighlights (mode/turn/move changes).
+    private void RefreshBlastPreview()
+    {
         var blastPreview = new HashSet<Vector2I>();
+        bool grenadeView = _actionMode == ActionMode.Grenade
+            && !_turns.Combatants[_turns.CurrentIndex].IsEnemy;
         if (grenadeView && _hoverCell != null && _grenadeTargets.Contains(_hoverCell.Value))
         {
             blastPreview.Add(_hoverCell.Value);
@@ -1904,11 +2067,6 @@ public partial class Level01 : Control
                 blastPreview.Add(_hoverCell.Value + dir);
         }
         _grid.BlastCells = blastPreview;
-        RefreshGridLabels();
-        _grid.Rebuild();
-        // Any change that affects mode/move/turn state also changes what the
-        // hover path preview may show.
-        RefreshPathPreview();
     }
 
     // Rebuild the per-token HP text list the grid layer draws (live tokens
@@ -2118,16 +2276,35 @@ public partial class Level01 : Control
         itemsVbox.AddChild(_grenadeButton);
         _itemsMenu.AddChild(itemsVbox);
         vbox.AddChild(_itemsMenu);
-        // Second row: END TURN, so the turn can be closed without reaching for
-        // the top-right debug panel.
+        // Second row: END TURN + UNDO, so the turn can be closed (or a move
+        // reconsidered) without reaching for the top-right console.
         var turnRow = new HBoxContainer { Name = "TurnRow" };
         turnRow.AddThemeConstantOverride("separation", 8);
         _endTurnMenuButton = new Button { Name = "EndTurn", Text = "END TURN", CustomMinimumSize = new Vector2(160, 34) };
         _endTurnMenuButton.Pressed += OnEndTurnPressed;
         turnRow.AddChild(_endTurnMenuButton);
+        _undoMenuButton = new Button { Name = "Undo", Text = "UNDO", CustomMinimumSize = new Vector2(80, 34) };
+        _undoMenuButton.Pressed += OnUndoPressed;
+        turnRow.AddChild(_undoMenuButton);
         vbox.AddChild(turnRow);
         _actionMenu.AddChild(vbox);
         AddChild(_actionMenu);
+    }
+
+    // Build the BACK TO MENU button pinned to the top-left corner of the
+    // screen (the top-right panel is now a pure console).
+    private void BuildTopLeftBackButton()
+    {
+        _backButton = new Button
+        {
+            Name = "Back",
+            Text = "BACK TO MENU",
+            CustomMinimumSize = new Vector2(140, 34),
+            ZIndex = 10,
+        };
+        _backButton.Pressed += OnBackPressed;
+        _backButton.Position = new Vector2(12, 12);
+        AddChild(_backButton);
     }
 
     private void UpdateActionMenu()
@@ -2151,6 +2328,9 @@ public partial class Level01 : Control
         // ITEMS is disabled once the action is spent (or on enemy turns); it
         // can still be opened to look at the list before spending the action.
         _itemsButton.Disabled = enemyTurn || _actionUsed;
+        // UNDO restores the turn's move; it is only useful once a party member
+        // has actually moved this turn (and the turn is still active).
+        _undoMenuButton.Disabled = enemyTurn || !_movedThisTurn || !_turnActive;
         _bioStimButton.Disabled = _actionUsed || stims <= 0 || current.HitPoints >= current.MaxHitPoints;
         _grenadeButton.Disabled = _actionUsed || nades <= 0;
         _itemsMenu.Visible = _itemsMenuOpen && !enemyTurn;

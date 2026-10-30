@@ -16,6 +16,9 @@ public class Character
     public Color Color { get; }
     public int Agility { get; }
     public int Constitution { get; }
+    // Finesse: accuracy. Drives the hit chance (see Level01.HitChance) — the
+    // D&D-style bonus is +1% per 2 points above 10.
+    public int Finesse { get; }
     public bool IsEnemy { get; }
 
     /// <summary>Equipped gear (head, body, weapon). The weapon drives the shoot mechanic.</summary>
@@ -66,13 +69,21 @@ public class Character
         return true;
     }
 
-    public Character(string name, Color color, int agility, int constitution, bool isEnemy = false)
+    public Character(string name, Color color, int agility, int constitution, int finesse, bool isEnemy = false)
     {
         Name = name;
         Color = color;
         Agility = agility;
         Constitution = constitution;
+        Finesse = finesse;
         HitPoints = MaxHitPoints;
         IsEnemy = isEnemy;
     }
+
+    /// <summary>
+    /// D&amp;D-style ability bonus: +1 per 2 points above 10, -1 per 2 below
+    /// (10-11 -> 0, 12-13 -> +1, 8-9 -> -1, 6-7 -> -2). Floor division, so
+    /// odd stats round toward the lower bonus.
+    /// </summary>
+    public static int DndBonus(int stat) => (int)MathF.Floor((stat - 10) / 2.0f);
 }

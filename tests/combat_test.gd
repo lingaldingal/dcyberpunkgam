@@ -48,6 +48,12 @@ func _run() -> void:
 	var board: Node = level.get_node("Board")
 	await _pin_weapons()
 
+	# Attacks now roll to hit (65% base + Finesse, - target Agility). Pin every
+	# attack to a guaranteed HIT so the damage/HP/AI expectations below stay
+	# deterministic; a dedicated hit/miss section at the end covers the roll.
+	level.SetForcedHit(1)
+	await process_frame
+
 	# --- HP = 5 + Constitution for everyone; Constitution in [7, 13]. ---
 	_check(level.GetHitPoints("Vex") == 16, "Vex HP = 5 + Con 11 = 16 (got %d)" % level.GetHitPoints("Vex"))
 	_check(level.GetHitPoints("Kaito") == 14, "Kaito HP = 5 + Con 9 = 14 (got %d)" % level.GetHitPoints("Kaito"))
@@ -544,7 +550,7 @@ func _run() -> void:
 		await process_frame
 	_check(level.GetCurrentName() == "Rook",
 			"Brute auto-ended, Rook is active (got '%s')" % level.GetCurrentName())
-	var end_turn: Button = level.get_node("Center/Panel/Actions/EndTurn")
+	var end_turn: Button = level.get_node("ActionMenu/VBox/TurnRow/EndTurn")
 	var token_wisp: Node = board.get_node("Iso/E3")
 	var shots := 0
 	while level.IsAlive("Wisp") and shots < 8:
@@ -607,8 +613,8 @@ func _run() -> void:
 	_check(level.GetItemsMenuOpen() == true, "pressing ITEMS opens the items list")
 	_check(level.GetActionMode() == 0, "opening items does not change the action mode")
 
-	# --- Grenade throw range: a square of side 2*4+1 = 9 centered on the
-	# thrower (Chebyshev distance <= 4, any direction). ---
+	# --- Grenade throw range: a CIRCLE of radius 4 centered on the thrower
+	# (dx^2 + dy^2 <= 16, same rule as the shoot range). ---
 	# Vex sits at (1,1). The throw range is 4 squares away in any direction.
 	level.SetTokenCell("Vex", 1, 1)
 	await process_frame
@@ -618,16 +624,47 @@ func _run() -> void:
 	grenade_btn.pressed.emit()
 	await process_frame
 	_check(level.GetActionMode() == 3, "GRENADE button enters grenade mode (got %d)" % level.GetActionMode())
-	# Within range (Chebyshev <= 4): 4 east, 4 west, 4 south, 4 north.
+	# Inside the circle: 4 east, 4 south, and 3+1 / 2+2 diagonals.
 	_check(level.IsGrenadeTarget(5, 1), "4 east is throwable (got %s)" % level.IsGrenadeTarget(5, 1))
 	_check(level.IsGrenadeTarget(1, 5), "4 south is throwable (got %s)" % level.IsGrenadeTarget(1, 5))
-	_check(level.IsGrenadeTarget(5, 5), "4 east + 4 south (diagonal) is throwable (got %s)" % level.IsGrenadeTarget(5, 5))
-	# Out of range: 5 away.
+	_check(level.IsGrenadeTarget(4, 2), "3 east + 1 south (diagonal) is throwable (got %s)" % level.IsGrenadeTarget(4, 2))
+	_check(level.IsGrenadeTarget(3, 3), "2 east + 2 south (diagonal) is throwable (got %s)" % level.IsGrenadeTarget(3, 3))
+	# Outside the circle: 5 away, 4+3 diagonal (sqrt(25) > 4) and 4+4 diagonal.
 	_check(level.IsGrenadeTarget(6, 1) == false, "5 east is NOT throwable")
 	_check(level.IsGrenadeTarget(1, 6) == false, "5 south is NOT throwable")
+	_check(level.IsGrenadeTarget(5, 4) == false, "4 east + 3 south (diagonal) is NOT throwable")
+	_check(level.IsGrenadeTarget(5, 5) == false, "4 east + 4 south (diagonal) is NOT throwable")
 	_check(level.IsGrenadeTarget(6, 6) == false, "5 east + 5 south is NOT throwable")
 	# The thrower's own cell is throwable.
 	_check(level.IsGrenadeTarget(1, 1), "own cell is throwable")
+
+	# --- Red cross preview: hovering a yellow target shows the 5 blast cells
+	# (landing cell + 4 orthogonal neighbours); other hovers/modes show none.
+	level.SetHoverCell(5, 1)
+	await process_frame
+	_check(level.GetBlastCells() == "5,0 4,1 5,1 6,1 5,2",
+			"hovering (5,1) previews its 5 blast cells (got '%s')" % level.GetBlastCells())
+	level.SetHoverCell(1, 1)
+	await process_frame
+	_check(level.GetBlastCells() == "1,0 0,1 1,1 2,1 1,2",
+			"hovering own cell (1,1) previews its 5 blast cells (got '%s')" % level.GetBlastCells())
+	level.ClearHoverCell()
+	await process_frame
+	_check(level.GetBlastCells() == "", "no blast preview after the mouse leaves (got '%s')" % level.GetBlastCells())
+	# Leaving grenade mode hides the preview too.
+	level.SetHoverCell(5, 1)
+	await process_frame
+	level.SetActionMode(0)
+	await process_frame
+	_check(level.GetBlastCells() == "", "no blast preview in move mode (got '%s')" % level.GetBlastCells())
+	level.SetHoverCell(5, 1)
+	await process_frame
+	level.SetActionMode(3)
+	await process_frame
+	# Back in grenade mode the preview returns.
+	_check(level.GetBlastCells() != "", "blast preview returns on re-entering grenade mode (got '%s')" % level.GetBlastCells())
+	level.ClearHoverCell()
+	await process_frame
 
 	# --- Grenade blast: cross shape (landing cell + 4 orthogonal neighbours),
 	# 6 damage to every combatant standing on those cells. ---
@@ -667,7 +704,100 @@ func _run() -> void:
 	_check(grenade_btn.disabled == true, "GRENADE button disabled at 0 grenades on a fresh turn")
 	_check(String(grenade_btn.text) == "GRENADE x0", "GRENADE button shows 0 on a fresh turn (got '%s')" % String(grenade_btn.text))
 
+	# --- Hit/miss: Finesse stat, the D&D-style hit formula, and the roll. ---
+	# Finesse (accuracy) is a fixed roster value, distinct from Agility:
+	# Vex 12, Kaito 11, Rook 10, Mira 13, Gutter 9, Slick 12, Brute 11, Wisp 8.
+	_check(level.GetFinesse("Vex") == 12, "Vex Finesse = 12 (got %d)" % level.GetFinesse("Vex"))
+	_check(level.GetFinesse("Rook") == 10, "Rook Finesse = 10 (got %d)" % level.GetFinesse("Rook"))
+	_check(level.GetFinesse("Wisp") == 8, "Wisp Finesse = 8 (got %d)" % level.GetFinesse("Wisp"))
+	# Hit chance = 65 + DndBonus(attacker Finesse) - DndBonus(target Agility),
+	# clamped 1..99. Vex (Fin 12 -> +1) vs Wisp (Agi 9 -> -1): 65 + 1 - (-1) = 67.
+	_check(level.GetHitChance("Vex", "Wisp") == 67,
+			"Vex->Wisp hit chance = 65 +1 -(-1) = 67 (got %d)" % level.GetHitChance("Vex", "Wisp"))
+	# Rook (Fin 10 -> 0) vs Vex (Agi 12 -> +1): 65 + 0 - 1 = 64.
+	_check(level.GetHitChance("Rook", "Vex") == 64,
+			"Rook->Vex hit chance = 65 +0 -1 = 64 (got %d)" % level.GetHitChance("Rook", "Vex"))
+
+	# The Finesse line is shown in the top-right info panel.
+	_check(String(level.GetInfoText()).contains("Fin 12"),
+			"info panel shows Vex's Finesse (got '%s')" % String(level.GetInfoText()))
+
+	# --- Attack-roll checks against Brute (Wisp is dead from the AI section). ---
+	# Put Vex and Brute on the clear row y=1 and move Kaito off it so the
+	# shooter->target segment is unblocked.
+	level.SetTokenCell("Vex", 1, 1)
+	level.SetTokenCell("Brute", 5, 1)
+	level.SetTokenCell("Kaito", 1, 0)
+	level.SetWeapon("Vex", false)  # pistol: range 4, 2 dmg
+
+	# Forced HIT: a shoot lands and deals damage; the outcome + info log say HIT.
+	level.SetForcedHit(1)
+	level.ForceCurrent("Vex")
+	await process_frame
+	var brute_hp_hit: int = level.GetHitPoints("Brute")
+	level.SetActionMode(SHOOT)
+	_board_click(board, Vector2i(5, 1))
+	await process_frame
+	_check(level.GetLastAttackResult() == "HIT", "forced hit reports HIT (got '%s')" % level.GetLastAttackResult())
+	_check(level.GetHitPoints("Brute") == brute_hp_hit - 2,
+			"forced hit deals pistol damage 2 (got %d, was %d)" % [level.GetHitPoints("Brute"), brute_hp_hit])
+	_check(String(level.GetInfoText()).contains("HIT"),
+			"info panel logs the HIT (got '%s')" % String(level.GetInfoText()))
+
+	# Forced MISS: the shoot is rolled and misses — no damage, outcome MISS.
+	level.SetForcedHit(0)
+	level.ForceCurrent("Vex")
+	await process_frame
+	var brute_hp_miss: int = level.GetHitPoints("Brute")
+	level.SetActionMode(SHOOT)
+	_board_click(board, Vector2i(5, 1))
+	await process_frame
+	_check(level.GetLastAttackResult() == "MISS", "forced miss reports MISS (got '%s')" % level.GetLastAttackResult())
+	_check(level.GetHitPoints("Brute") == brute_hp_miss,
+			"forced miss deals no damage (got %d, was %d)" % [level.GetHitPoints("Brute"), brute_hp_miss])
+	_check(String(level.GetInfoText()).contains("MISS"),
+			"info panel logs the MISS (got '%s')" % String(level.GetInfoText()))
+
+	# The roll also gates melee: a forced-miss melee strike deals no damage.
+	level.SetTokenCell("Brute", 2, 1)  # directly east of Vex at (1,1)
+	level.SetMeleeWeapon("Vex", false)  # knife: 3 dmg
+	level.SetForcedHit(0)
+	level.ForceCurrent("Vex")
+	await process_frame
+	var brute_hp_mmiss: int = level.GetHitPoints("Brute")
+	level.SetActionMode(2)  # Level01.ActionMode.Melee
+	_board_click(board, Vector2i(2, 1))
+	await process_frame
+	_check(level.GetLastAttackResult() == "MISS", "forced-miss melee reports MISS (got '%s')" % level.GetLastAttackResult())
+	_check(level.GetHitPoints("Brute") == brute_hp_mmiss,
+			"forced-miss melee deals no damage (got %d, was %d)" % [level.GetHitPoints("Brute"), brute_hp_mmiss])
+	# ...and a forced-hit melee strike deals the knife damage.
+	level.SetForcedHit(1)
+	level.ForceCurrent("Vex")
+	await process_frame
+	var brute_hp_mhit: int = level.GetHitPoints("Brute")
+	level.SetActionMode(2)
+	_board_click(board, Vector2i(2, 1))
+	await process_frame
+	_check(level.GetLastAttackResult() == "HIT", "forced-hit melee reports HIT (got '%s')" % level.GetLastAttackResult())
+	_check(level.GetHitPoints("Brute") == brute_hp_mhit - 3,
+			"forced-hit melee deals knife damage 3 (got %d, was %d)" % [level.GetHitPoints("Brute"), brute_hp_mhit])
+
+	# Back to rolling normally (no forced outcome latched).
+	level.SetForcedHit(-1)
+
 	_finish()
+
+
+# Emit a left mouse click at the iso screen position of board cell (x, y)
+# through the board's gui_input (the same path the existing shoot/melee tests
+# use), so the level's board-click handler resolves the cell and acts.
+func _board_click(board: Node, cell: Vector2i) -> void:
+	var click := InputEventMouseButton.new()
+	click.button_index = MOUSE_BUTTON_LEFT
+	click.pressed = true
+	click.position = level.IsoCellCenter(cell)
+	board.gui_input.emit(click)
 
 
 func _check(condition: bool, message: String) -> void:

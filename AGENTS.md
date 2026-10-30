@@ -15,7 +15,7 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - `scripts/TokenNode.cs` — Node2D per combatant under `Board/Iso`, draws a filled diamond at its cell corner; name rendered by Level01 as an unskewed Label overlay
 - `scripts/Character.cs` — combatant data (Name, Color, Agility, `IsEnemy`, `MovementRange` = 5 + Agility/2 floored, `Constitution`/`HitPoints`/`MaxHitPoints`, `Equipment`, `Items` inventory, `UseItem`/`GetItemCount`/`Heal`)
 - `scripts/Weapon.cs` — `Weapon` (Name, Range, Damage); built-ins `Pistol` (4/2) + `Rifle` (6/3) (ranged) and `Knife` (3) + `Katana` (5) (melee, range 0)
-- `scripts/Item.cs` — `Item` (Name, HealValue); built-in `BioStim` (heal 6)
+- `scripts/Item.cs` — `Item` (Name, HealValue, ThrowRange, BlastDamage); built-ins `BioStim` (heal 6) + `Grenade` (throw 4, blast 6)
 - `scripts/Equipment.cs` — `Equipment` (Head, Body, Weapon (ranged), MeleeWeapon) + `ToText()`
 - `scripts/TurnSystem.cs` — round-based initiative turn order (see below)
 - `dcyberpunkgam.csproj` / `dcyberpunkgam.sln` — .NET project (Godot.NET.Sdk 4.7.2, net8.0)
@@ -23,7 +23,7 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - `tests/flow_test.gd` — headless SceneTree functional test (menu → level → 8-combatant initiative → rounds → movement range → BFS reachability → **move-mode path preview** (hover route line + endpoint circle, hide cases) → **camera panning + clamping + zoom/pan interaction** → **mouse click-to-move** (incl. click **behind** an obstacle/character via BFS detour) → once-per-turn + UNDO → enemy auto-move + auto turn-end → back). ~99 checks.
 - `tests/cutscene_test.gd` — headless functional test (menu → SCENE TEST → name-instant/body-typewriter reveal, speaker alternation, highlight, click-to-advance, back). ~19 checks.
 - `tests/resolution_test.gd` — headless test: menu RESOLUTION button cycles 1280x720 → 1600x900 → 1920x1080 → back
-- `tests/combat_test.gd` — headless combat test (equipment + random ranged AND melee weapon assignment, **circle-based shoot range (any direction, dx²+dy² ≤ range²) + LOS blocking by walls AND characters**, shooting-circle overlay, **weapon-based range/damage: pistol 4/2, rifle 6/3**, **melee: 4-adjacent-squares, knife 3 / katana 5, melee+shoot share the one action, melee-after-move recompute, enemy melee fallback when LOS blocked + enemy prefers shoot**, once-per-turn, WAIT, **enemy AI (move into shooting circle / hold + shoot or melee)**, **BioStim heal**, death removes token + skips turns, **END TURN button in the actions menu**, action-menu screen clamping). ~140 checks.
+- `tests/combat_test.gd` — headless combat test (equipment + random ranged AND melee weapon assignment, **circle-based shoot range (any direction, dx²+dy² ≤ range²) + LOS blocking by walls AND characters**, shooting-circle overlay, **weapon-based range/damage: pistol 4/2, rifle 6/3**, **melee: 4-adjacent-squares, knife 3 / katana 5, melee+shoot share the one action, melee-after-move recompute, enemy melee fallback when LOS blocked + enemy prefers shoot**, once-per-turn, WAIT, **enemy AI (move into shooting circle / hold + shoot or melee)**, **BioStim heal + grenade (circle throw range, 5-cell cross blast, red cross hover preview)**, death removes token + skips turns, **END TURN button in the actions menu**, action-menu screen clamping). ~155 checks.
 - `readme.me` — pre-existing file, untouched
 
 ## Cutscene (scene_test)
@@ -273,10 +273,26 @@ SCENE TEST button:
   combatants (assigned in `AssignStartingGear()`). `Equipment.ToText()`
   → "Pistol · Knife · Ballistic Cap · Weave Vest" (shown in the actions menu
   + HUD).
-- **Items** (`Item.cs`): consumables with a `HealValue`. `Item.BioStim`
-  (heal 6) — party members start with **2** (enemies 0). Using one heals up to
-  `MaxHitPoints` and consumes the action. `Character.UseItem` /
-  `GetItemCount`.
+- **Items** (`Item.cs`): consumables with a `HealValue` / `ThrowRange` /
+  `BlastDamage`. `Item.BioStim` (heal 6) — party members start with **2**
+  (enemies 0); using one heals up to `MaxHitPoints` and consumes the action.
+  `Item.Grenade` (throw range 4, blast 6) — **every** combatant starts with
+  **1**. `Character.UseItem` / `GetItemCount` / `ConsumeItem`.
+- **Grenade** (`ActionMode.Grenade`, `OnGrenadePressed` from the ITEMS menu,
+  `ApplyGrenade`): the thrower enters grenade mode — every **walkable** cell
+  inside the grenade's **throwing CIRCLE** (`dx²+dy² ≤ ThrowRange²`, any
+  direction, the thrower's own cell included — same circle rule as the shoot
+  range, see `ComputeGrenadeTargets`) is a **yellow** throw target. A board
+  click on one detonates it: the landing cell **+ its four orthogonal
+  neighbours** (a 5-cell cross, NO line-of-sight — a throw arcs over
+  obstacles) deal `BlastDamage` to every live token standing there. Consumes
+  a grenade + the action. **Red cross preview**: while aiming, hovering a
+  yellow target draws a **red** cross over those 5 blast cells
+  (`RefreshBlastPreview` → `IsoGrid.BlastCells`, redrawn on hover change via
+  `OnBoardMouseMoved`/`OnBoardMouseExited`). Enemy AI does NOT throw grenades
+  (player-only for now). Test hooks: `IsGrenadeTarget(int,int)`, `UseGrenade(int,int)`,
+  `GetBlastCells() -> string` (the 5 preview cells, sorted `"x,y …"`),
+  `ForceGrenadeMode()`.
 - **Line of sight**: a shot is only valid if the segment shooter→target is
   clear — `HasLineOfSight(from, to, range)` walks the intermediate cells with
   an integer **Bresenham** (exact 45° diagonals are walked one-by-one; other
