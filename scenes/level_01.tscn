@@ -56,22 +56,3 @@ theme_override_font_sizes/font_size = 11
 text = ""
 horizontal_alignment = 2
 autowrap_mode = 3
-
-[node name="Actions" type="HBoxContainer" parent="Center/Panel"]
-layout_mode = 2
-theme_override_constants/separation = 8
-
-[node name="EndTurn" type="Button" parent="Center/Panel/Actions"]
-layout_mode = 2
-custom_minimum_size = Vector2(110, 30)
-text = "END TURN"
-
-[node name="Undo" type="Button" parent="Center/Panel/Actions"]
-layout_mode = 2
-custom_minimum_size = Vector2(80, 30)
-text = "UNDO"
-
-[node name="Back" type="Button" parent="Center/Panel/Actions"]
-layout_mode = 2
-custom_minimum_size = Vector2(110, 30)
-text = "BACK TO MENU"

@@ -94,7 +94,7 @@ func _run_flow() -> void:
 	_check(level.GetRound() == 1, "level starts on round 1 (got %d)" % level.GetRound())
 
 	var turn := level.get_node("Center/Panel/HUD/Turn")
-	var end_turn := level.get_node("Center/Panel/Actions/EndTurn")
+	var end_turn := level.get_node("ActionMenu/VBox/TurnRow/EndTurn")
 
 	# --- Initiative: total = Agility + d5 roll; order = descending total. ---
 	# Roster agility: Vex 12, Kaito 10, Rook 15, Mira 10, Gutter 11, Slick 13,
@@ -513,7 +513,7 @@ func _run_flow() -> void:
 			"enemy turn auto-ended after acting (now '%s')" % level.GetCurrentName())
 
 	# BACK returns to the menu.
-	level.get_node("Center/Panel/Actions/Back").pressed.emit()
+	level.get_node("Back").pressed.emit()
 	await process_frame
 	_check(root.get_node_or_null("MainMenu") != null, "BACK returns to menu")
 

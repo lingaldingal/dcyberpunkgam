@@ -258,8 +258,10 @@ public partial class Level01 : Control
     private Control _board = null!;
     private Label _turnLabel = null!;
     private Label _infoLabel = null!;
-    private Button _endTurnButton = null!;
-    private Button _undoButton = null!;
+    // The actions menu's UNDO button (built in BuildActionMenu).
+    private Button _undoMenuButton = null!;
+    // The BACK TO MENU button pinned to the top-left corner (built in
+    // BuildTopLeftBackButton).
     private Button _backButton = null!;
 
     public override void _Ready()
@@ -324,16 +326,14 @@ public partial class Level01 : Control
         _turns.StartEncounter();
         BuildBoard();
         BuildActionMenu();
+        BuildTopLeftBackButton();
         InitializeCamera();
 
+        // The top-right panel is now a pure console (turn line + rolling log);
+        // the END TURN / UNDO / BACK buttons live in the actions menu and the
+        // top-left corner, so only the two labels are read from the scene.
         _turnLabel = GetNode<Label>("Center/Panel/HUD/Turn");
         _infoLabel = GetNode<Label>("Center/Panel/HUD/Info");
-        _endTurnButton = GetNode<Button>("Center/Panel/Actions/EndTurn");
-        _undoButton = GetNode<Button>("Center/Panel/Actions/Undo");
-        _backButton = GetNode<Button>("Center/Panel/Actions/Back");
-        _endTurnButton.Pressed += OnEndTurnPressed;
-        _undoButton.Pressed += OnUndoPressed;
-        _backButton.Pressed += OnBackPressed;
 
         SetActive();
     }
@@ -1973,7 +1973,10 @@ public partial class Level01 : Control
             _rangeCircle = new Polygon2D
             {
                 Name = "RangeCircle",
-                Color = new Color(0.95f, 0.45f, 0.35f, 0.10f),
+                // Fully transparent: the red shootable squares are the range
+                // cue now. The node still tracks its geometry so
+                // GetRangeCircle() keeps reporting the correct range box.
+                Color = new Color(0.95f, 0.45f, 0.35f, 0f),
                 ZIndex = 1, // above the floor grid, under the tokens
             };
             _iso.AddChild(_rangeCircle);
@@ -2254,16 +2257,35 @@ public partial class Level01 : Control
         itemsVbox.AddChild(_grenadeButton);
         _itemsMenu.AddChild(itemsVbox);
         vbox.AddChild(_itemsMenu);
-        // Second row: END TURN, so the turn can be closed without reaching for
-        // the top-right debug panel.
+        // Second row: END TURN + UNDO, so the turn can be closed (or a move
+        // reconsidered) without reaching for the top-right console.
         var turnRow = new HBoxContainer { Name = "TurnRow" };
         turnRow.AddThemeConstantOverride("separation", 8);
         _endTurnMenuButton = new Button { Name = "EndTurn", Text = "END TURN", CustomMinimumSize = new Vector2(160, 34) };
         _endTurnMenuButton.Pressed += OnEndTurnPressed;
         turnRow.AddChild(_endTurnMenuButton);
+        _undoMenuButton = new Button { Name = "Undo", Text = "UNDO", CustomMinimumSize = new Vector2(80, 34) };
+        _undoMenuButton.Pressed += OnUndoPressed;
+        turnRow.AddChild(_undoMenuButton);
         vbox.AddChild(turnRow);
         _actionMenu.AddChild(vbox);
         AddChild(_actionMenu);
+    }
+
+    // Build the BACK TO MENU button pinned to the top-left corner of the
+    // screen (the top-right panel is now a pure console).
+    private void BuildTopLeftBackButton()
+    {
+        _backButton = new Button
+        {
+            Name = "Back",
+            Text = "BACK TO MENU",
+            CustomMinimumSize = new Vector2(140, 34),
+            ZIndex = 10,
+        };
+        _backButton.Pressed += OnBackPressed;
+        _backButton.Position = new Vector2(12, 12);
+        AddChild(_backButton);
     }
 
     private void UpdateActionMenu()
@@ -2287,6 +2309,9 @@ public partial class Level01 : Control
         // ITEMS is disabled once the action is spent (or on enemy turns); it
         // can still be opened to look at the list before spending the action.
         _itemsButton.Disabled = enemyTurn || _actionUsed;
+        // UNDO restores the turn's move; it is only useful once a party member
+        // has actually moved this turn (and the turn is still active).
+        _undoMenuButton.Disabled = enemyTurn || !_movedThisTurn || !_turnActive;
         _bioStimButton.Disabled = _actionUsed || stims <= 0 || current.HitPoints >= current.MaxHitPoints;
         _grenadeButton.Disabled = _actionUsed || nades <= 0;
         _itemsMenu.Visible = _itemsMenuOpen && !enemyTurn;
