@@ -550,7 +550,7 @@ func _run() -> void:
 		await process_frame
 	_check(level.GetCurrentName() == "Rook",
 			"Brute auto-ended, Rook is active (got '%s')" % level.GetCurrentName())
-	var end_turn: Button = level.get_node("Center/Panel/Actions/EndTurn")
+	var end_turn: Button = level.get_node("ActionMenu/VBox/TurnRow/EndTurn")
 	var token_wisp: Node = board.get_node("Iso/E3")
 	var shots := 0
 	while level.IsAlive("Wisp") and shots < 8:
