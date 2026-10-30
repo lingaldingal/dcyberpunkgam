@@ -308,15 +308,23 @@ public partial class Level01 : Control
     // The board's pixel extent. Equals Grid*TileSize for the level's own grid,
     // but is configurable (see SetBoardPixelSize) so the panning/clamping logic
     // can be exercised against a large board (e.g. a 2000x2000 level).
-    private float _boardPixelW;
-    private float _boardPixelH;
+    //
+    // The ISO board's bounding box in BOARD SPACE. The 2:1 skew maps the
+    // logical (W x H) board to a diamond whose bounding box is
+    //   x: [-H*T/2,  W*T/2]   (width  (W+H)*T/2)
+    //   y: [ 0,      (W+H)*T/4]   (height (W+H)*T/4)
+    // NOTE the negative left edge: cell (0,H) projects to board x = -H*T/2.
+    // The camera clamps to THIS box (not a [0, size] box), otherwise the
+    // left third of the diamond is pinned off-screen.
+    private Rect2 _isoBounds;
 
-    // Clamp the camera to the board and apply it. The board is a plain
-    // Control, so it is shown by offsetting it by -camera (the board's own
-    // children keep their board-local coordinates; only the board moves).
-    // The camera is the board pixel at the viewport's top-left, so it is
-    // always >= 0 and, when the board is larger than the viewport in a
-    // dimension, at most (board - view) in that dimension.
+    // Clamp the camera to the ISO board's bounding box and apply it. The board
+    // is a plain Control, so it is shown by offsetting it by -camera (the
+    // board's own children keep their board-local coordinates; only the board
+    // moves). The camera is the board pixel at the viewport's top-left; it is
+    // clamped to [bounds.Min, bounds.Max - view] per axis, so a board smaller
+    // than the viewport in a dimension is centered (negative board offset),
+    // and a larger one clamps at the edges.
     private void ApplyCamera()
     {
         if (_board == null)
@@ -325,23 +333,22 @@ public partial class Level01 : Control
         float viewW = Size.X > 0 ? Size.X : 1;
         float viewH = Size.Y > 0 ? Size.Y : 1;
 
-        float maxX = Mathf.Max(0f, _boardPixelW - viewW);
-        float maxY = Mathf.Max(0f, _boardPixelH - viewH);
+        float minX = Mathf.Min(_isoBounds.Position.X, _isoBounds.End.X - viewW);
+        float minY = Mathf.Min(_isoBounds.Position.Y, _isoBounds.End.Y - viewH);
         _cameraPos = new Vector2(
-            Mathf.Clamp(_cameraPos.X, 0f, maxX),
-            Mathf.Clamp(_cameraPos.Y, 0f, maxY));
+            Mathf.Clamp(_cameraPos.X, minX, _isoBounds.End.X - viewW),
+            Mathf.Clamp(_cameraPos.Y, minY, _isoBounds.End.Y - viewH));
 
         _board.Position = -_cameraPos;
     }
 
     private void InitializeCamera()
     {
-        // The board's on-screen (ISO) extent: the skew X=(.5,.25) Y=(-.5,.25)
-        // maps the logical WxH board to a (W+H)*Tile/2 wide, (W+H)*Tile/4
-        // tall diamond on screen. The camera clamps to THIS, not the logical
-        // board, so panning covers exactly the drawn area.
-        _boardPixelW = (GridWidth + GridHeight) * TileSize / 2f;
-        _boardPixelH = (GridWidth + GridHeight) * TileSize / 4f;
+        // The board's on-screen (ISO) bounding box (see _isoBounds comment).
+        _isoBounds = new Rect2(
+            -GridHeight * TileSize / 2f, 0f,
+            (GridWidth + GridHeight) * TileSize / 2f,
+            (GridWidth + GridHeight) * TileSize / 4f);
         // The viewport Size is not laid out until after _Ready, so the actual
         // centering is deferred to the first _Process frame (see _Process).
         ApplyCamera();
@@ -354,11 +361,14 @@ public partial class Level01 : Control
     private void CenterCamera()
     {
         _cameraCentered = true;
-        // Start centered on the board (clamped for boards smaller than the
-        // viewport, where the camera stays at the origin).
-        _cameraPos = new Vector2(
-            Mathf.Max(0f, (_boardPixelW - Size.X) / 2f),
-            Mathf.Max(0f, (_boardPixelH - Size.Y) / 2f));
+        // Start centered on the ISO diamond: the diamond's center is the
+        // board-space point ((W-H)*T/4, (W+H)*T/8); the camera is the board
+        // pixel at the viewport's top-left, i.e. that center minus the
+        // viewport's half-size. Clamped for boards smaller than the viewport.
+        var center = new Vector2(
+            (GridWidth - GridHeight) * TileSize / 4f,
+            (GridWidth + GridHeight) * TileSize / 8f);
+        _cameraPos = center - new Vector2(Size.X / 2f, Size.Y / 2f);
         ApplyCamera();
     }
 
@@ -400,11 +410,14 @@ public partial class Level01 : Control
         => new Vector2I((int)(_tokens[index].Position.X / TileSize),
                         (int)(_tokens[index].Position.Y / TileSize));
 
-    /// <summary>Test hook: treat the board as <paramref name="pixels"/> wide/tall.</summary>
+    /// <summary>Test hook: treat the board's on-screen extent as w x h.</summary>
     public void SetBoardPixelSize(float w, float h)
     {
-        _boardPixelW = w;
-        _boardPixelH = h;
+        // Rebuild the bounding box as a plain [0, w] x [0, h] area so the
+        // pan/clamp test can exercise edge clamping with the familiar
+        // (0,0) origin. (The real board uses the ISO diamond's true bounds,
+        // which have a negative left edge — see InitializeCamera.)
+        _isoBounds = new Rect2(0f, 0f, w, h);
         ApplyCamera();
     }
 

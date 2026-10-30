@@ -93,16 +93,22 @@ SCENE TEST button:
   y*TILE`); the skew maps logical `(x,y)` → screen `((x-y)/2*TILE,
   (x+y)/4*TILE)`. Name labels are unskewed `Label` Controls under `Board`,
   repositioned via `IsoCellCenter` each frame. Inverse: `gx=(X+2Y)/T,
-  gy=(-X+2Y)/T` (`CellFromIso`). The iso board bounding box is
-  `W=(W+H)*TILE/2`, `H=(W+H)*TILE/4`.
+  gy=(-X+2Y)/T` (`CellFromIso`). The iso board bounding box (`_isoBounds`,
+  board space) is `x:[-H*T/2, W*T/2]`, `y:[0,(W+H)*T/4]` — i.e. width
+  `(W+H)*T/2`, height `(W+H)*T/4`. **NOTE the negative left edge**: cell
+  (0,H) projects to board x = -H*T/2, so the diamond's left vertex is OFF
+  the origin. The camera clamps to THIS box (not a [0,size] box).
 - **Camera panning (WASD).** Levels can be far larger than the window
   (up to 2000×2000 grids), so the board is offset by `-camera` and **WASD /
   arrow keys pan the viewport** one tile per frame (`UpdateCamera` in
   `_Process`, `CameraPanSpeed` = one tile/frame). `_cameraPos` is the board
-  pixel at the viewport's top-left; `ApplyCamera()` clamps it to the **iso
-  bounding box minus the viewport** per axis (a board smaller than the window
-  gets centered, not pinned). The camera **starts centered** on the iso bbox
-  (done once in the first `_Process` where `Size` is valid; in headless test
+  pixel at the viewport's top-left; `ApplyCamera()` clamps it to
+  `[bounds.Min, bounds.Max - view]` per axis (a board smaller than the window
+  gets centered, not pinned — the min clamp uses the diamond's NEGATIVE left
+  edge so its left third isn't pinned off-screen). The camera **starts
+  centered** on the iso diamond (diamond center = board point
+  `((W-H)*T/4, (W+H)*T/8)` minus the viewport half-size; done once in the
+  first `_Process` where `Size` is valid; in headless test
   mode `Size` is (0,0) so it stays at the origin — flow_test's pan assertions
   rely on that). `Board.Position = -camera`; the board's children keep
   board-local coords; only the board node moves. The info panel is
@@ -120,7 +126,8 @@ SCENE TEST button:
   Test hooks: `HasMovedThisTurn() -> bool`, `UndoMove()`, `ForceEnemyMove()`
   (acts for the active enemy now: move + end turn), `GetCameraPos()`,
   `PanCameraBy(Vector2)`, `SetBoardPixelSize(float w, float h)` (treats the
-  board as that pixel size — exercises pan/clamp on a large board),
+  board as that pixel size — replaces `_isoBounds` with a plain `[0,w]x[0,h]`
+  box so the test exercises pan/clamp on a large board),
   `SetPanKey(Key)` (simulates a held WASD key for the next `_Process`,
   `Key.None` clears — used to test panning headless where `Input.IsKeyPressed`
   is never true).
@@ -255,7 +262,9 @@ scene, `await process_frame` a few times, then
 build an `InputEventMouseButton` (left, pressed) and `Input.parse_input_event(p)`
 at the button's `get_global_rect().get_center()`, then the release event. Check
 the PNG has more than a handful of unique colors (flat = black screen); analyze
-with PIL.
+with PIL. `tests/_iso_shot.gd` (committed) is a ready-made example: it loads
+`level_01`, switches to shoot mode (shows the range overlay) and saves
+`tests/_iso_shot.png`.
 
 ## Menu layout gotcha (the black-screen bug)
 The original menu put `anchors_preset = 8` (center) on the Title/Buttons nodes
