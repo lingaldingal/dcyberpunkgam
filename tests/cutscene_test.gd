@@ -33,12 +33,14 @@ func _run_cutscene() -> void:
 	# The dialogue is the cheese conversation with alternating speakers.
 	_check(scene.GetLineCount() == 6, "cutscene has 6 dialogue lines (got %d)" % scene.GetLineCount())
 
-	# --- Reveal: text grows one character at a time. ---
+	# --- Reveal: the speaker name is shown instantly; only the body types out. ---
 	scene.SetLine(0)
+	var plain: String = scene.GetTextPlain()
+	_check(plain == "Vex: ", "name appears instantly with no body text (got '%s')" % plain)
 	for i in 3:
 		await process_frame
 	var full_line: String = scene.GetLineText()
-	var plain: String = scene.GetTextPlain()
+	plain = scene.GetTextPlain()
 	_check(plain.begins_with("Vex:"), "text starts with speaker name (got '%s')" % plain.left(12))
 	_check(plain.length() < full_line.length() + 5, "line starts partial, not fully revealed (got %d chars shown)" % (plain.length() - 5))
 	# Finish the reveal: the full line must then be present.
@@ -46,7 +48,8 @@ func _run_cutscene() -> void:
 	await process_frame
 	_check(scene.GetTextPlain() == "Vex: " + full_line, "SkipReveal shows the full line")
 
-	# The line holds (no auto-advance); an explicit Advance() moves on.
+	# The line holds (no auto-advance); a single Advance() moves on — no
+	# separate "finish reveal" press is needed.
 	for i in 30:
 		await process_frame
 	_check(scene.GetLineIndex() == 0, "line holds until advanced (auto-advance removed)")
@@ -55,6 +58,7 @@ func _run_cutscene() -> void:
 	_check(scene.GetLineIndex() == 1, "Advance() advances to the next line (got %d)" % scene.GetLineIndex())
 	_check(scene.GetSpeakerName() == "Kaito", "next line is spoken by Kaito (got '%s')" % scene.GetSpeakerName())
 	_check(scene.GetTextPlain().begins_with("Kaito:"), "Kaito's line text is showing")
+	_check(scene.GetTextPlain() == "Kaito: ", "Kaito's name appears instantly on advance (got '%s')" % scene.GetTextPlain())
 
 	# --- Speaker highlight: active portrait full + glow on, other dimmed. ---
 	await process_frame
@@ -74,6 +78,19 @@ func _run_cutscene() -> void:
 	_check(speakers == ["Vex", "Kaito", "Vex", "Kaito", "Vex", "Kaito"],
 			"speakers alternate Vex/Kaito (got %s)" % str(speakers))
 
+	# --- Clicking the dialogue text itself advances (RichTextLabel must not
+	# swallow the click). Headless mode sizes the root to 64x64, which pushes
+	# the text off-screen, so restore the real window size first. ---
+	scene.size = Vector2(1280, 720)
+	await process_frame
+	scene.SetLine(0)
+	scene.SkipReveal()
+	await process_frame
+	var text_rect: Rect2 = scene.get_node("DialogueBox/Text").get_global_rect()
+	_click_at(text_rect.get_center())
+	await process_frame
+	_check(scene.GetLineIndex() == 1, "clicking on the dialogue text advances the line (got %d)" % scene.GetLineIndex())
+
 	# --- Answering the last line ends the scene and returns to the menu. ---
 	scene.SetLine(5)
 	for i in 30:
@@ -81,17 +98,7 @@ func _run_cutscene() -> void:
 	scene.SkipReveal()
 	await process_frame
 	# Click an empty area (top, between the portraits) so no button swallows it.
-	var pos: Vector2 = Vector2(640, 30)
-	var down := InputEventMouseButton.new()
-	down.button_index = MOUSE_BUTTON_LEFT
-	down.pressed = true
-	down.position = pos
-	Input.parse_input_event(down)
-	var up := InputEventMouseButton.new()
-	up.button_index = MOUSE_BUTTON_LEFT
-	up.pressed = false
-	up.position = pos
-	Input.parse_input_event(up)
+	_click_at(Vector2(640, 30))
 	var ended := false
 	for i in 60:
 		await process_frame
@@ -115,6 +122,19 @@ func _run_cutscene() -> void:
 	_check(root.get_node_or_null("MainMenu") != null, "BACK returns to menu")
 
 	_finish()
+
+
+func _click_at(pos: Vector2) -> void:
+	var down := InputEventMouseButton.new()
+	down.button_index = MOUSE_BUTTON_LEFT
+	down.pressed = true
+	down.position = pos
+	Input.parse_input_event(down)
+	var up := InputEventMouseButton.new()
+	up.button_index = MOUSE_BUTTON_LEFT
+	up.pressed = false
+	up.position = pos
+	Input.parse_input_event(up)
 
 
 func _check(condition: bool, message: String) -> void:
