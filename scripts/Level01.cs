@@ -425,12 +425,17 @@ public partial class Level01 : Control
         if (_board == null)
             return;
 
-        // The board is scaled by _cameraScale (mouse-wheel zoom), so the
-        // viewport covers fewer board pixels when zoomed in. The effective
-        // view in board space is the window divided by the scale.
+        // The board is scaled by _cameraScale (mouse-wheel zoom). The clamp
+        // limits are computed for the WIDEST view — the window at full
+        // zoom-out (ZoomMin) — and held CONSTANT across every zoom level.
+        // That makes the pan limits the borders of the most zoomed-out view:
+        // zoomed in, you can still pan all the way to the same edges (the
+        // board is larger on-screen, so it overflows, which is normal zoom).
+        // Clamping to the current (smaller, zoomed-in) view instead would
+        // shrink the pan range and leave parts of the map unreachable.
         float scale = _cameraScale > 0 ? _cameraScale : 1f;
-        float viewW = (Size.X > 0 ? Size.X : 1) / scale;
-        float viewH = (Size.Y > 0 ? Size.Y : 1) / scale;
+        float viewW = (Size.X > 0 ? Size.X : 1) / ZoomMin;
+        float viewH = (Size.Y > 0 ? Size.Y : 1) / ZoomMin;
 
         float loX = _isoBounds.End.X - viewW;   // board's right edge at screen right
         float hiX = _isoBounds.Position.X;      // board's left edge at screen left

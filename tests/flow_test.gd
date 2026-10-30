@@ -265,6 +265,10 @@ func _run_flow() -> void:
 	# Tokens live at LOGICAL cell coordinates under Board/Iso (the iso skew
 	# node does the projection), so token.position stays x*TILE, y*TILE.
 	# (p0 — the Vex token — and board are already resolved above.)
+	# A deterministic viewport (headless size is 0x0, so the clamp would use a
+	# degenerate 1/0.75 view). Capture the ACTUAL size after the set.
+	level.size = Vector2(1280, 720)
+	await process_frame
 	var viewport: Vector2 = level.size
 	level.SetBoardPixelSize(10000, 10000)
 	# Snap the camera to the board origin (headless: already there; rendered:
@@ -277,10 +281,13 @@ func _run_flow() -> void:
 	level.PanCameraBy(Vector2(500, 300))
 	_check(level.GetCameraPos() == Vector2(500, 300), "camera pans to (500,300)")
 	_check(board.position == Vector2(-500, -300), "board offset tracks the camera")
-	# Panning far past the bottom-right edge clamps to the board's edge.
+	# Panning far past the bottom-right edge clamps to the board's edge. The
+	# clamp uses the WIDEST view (the window at full zoom-out, ZoomMin 0.75),
+	# so the reference view is the window / 0.75 — NOT the raw window size.
 	level.PanCameraBy(Vector2(99999, 99999))
-	_check(level.GetCameraPos() == Vector2(10000 - viewport.x, 10000 - viewport.y),
-			"camera clamps to the board's bottom-right edge")
+	_check(absf(level.GetCameraPos().x - (10000 - viewport.x / 0.75)) < 1.0
+			and absf(level.GetCameraPos().y - (10000 - viewport.y / 0.75)) < 1.0,
+			"camera clamps to the board's bottom-right edge (widest-view limit)")
 	# Panning far past the top-left edge clamps back to the origin.
 	level.PanCameraBy(Vector2(-99999, -99999))
 	_check(level.GetCameraPos() == Vector2(0, 0), "camera clamps back to the origin")
@@ -358,6 +365,48 @@ func _run_flow() -> void:
 	await process_frame
 	_check(level.GetCameraScale() >= 0.75 - 1e-3, "zoom out clamps at the min limit")
 	_check(level.GetCameraScale() <= 0.76, "zoom out reaches the min limit")
+	# Zoom/pan interaction: the pan clamp must be based on the WIDEST view
+	# (the reference view at ZoomMin), so a ZOOMED-IN camera can still pan to
+	# the same borders the zoomed-out view shows. The diamond is 1056x576 px;
+	# fully zoomed IN (1.75) its on-screen size (1848x1008) EXCEEDS the
+	# 1280x720 window, so with a zoom-dependent clamp the pan range would
+	# shrink below the board size — leaving map corners unreachable. With the
+	# widest-view clamp, the pan range stays the full board size at every
+	# zoom level.
+	level.ResetCamera()
+	await process_frame
+	# Zoomed OUT (0.75, widest view): the reference pan limits.
+	for i in 20:
+		level.ZoomBy(-1.0)
+	await process_frame
+	level.PanCameraBy(Vector2(-1e6, -1e6))
+	var min_out: Vector2 = level.GetCameraPos()
+	level.PanCameraBy(Vector2(1e6, 1e6))
+	await process_frame
+	var max_out: Vector2 = level.GetCameraPos()
+	# Range for a board smaller than the widest view is (view - board):
+	# x = 1280/0.75 - 1056 = 650.7, y = 720/0.75 - 576 = 384.
+	_check((max_out - min_out).x > 500.0 and (max_out - min_out).y > 300.0,
+			"zoomed-out view has a real pan range across the diamond")
+	# Fully zoomed IN (1.75): the diamond is bigger than the window, yet the
+	# pan range must be UNCHANGED (same borders as the widest view).
+	for i in 20:
+		level.ZoomBy(1.0)
+	await process_frame
+	_check(level.GetCameraScale() >= 1.74, "zoomed in to the max limit for the pan-limit check")
+	level.PanCameraBy(Vector2(-1e6, -1e6))
+	var min_in: Vector2 = level.GetCameraPos()
+	level.PanCameraBy(Vector2(1e6, 1e6))
+	await process_frame
+	var max_in: Vector2 = level.GetCameraPos()
+	_check(absf((max_in - min_in).x - (max_out - min_out).x) < 1.0,
+			"zoomed-in pan range matches the zoomed-out range (x)")
+	_check(absf((max_in - min_in).y - (max_out - min_out).y) < 1.0,
+			"zoomed-in pan range matches the zoomed-out range (y)")
+	_check(absf(max_in.x - max_out.x) < 1.0 and absf(min_in.x - min_out.x) < 1.0,
+			"zoomed-in pan limits equal the zoomed-out limits (x)")
+	_check(absf(max_in.y - max_out.y) < 1.0 and absf(min_in.y - min_out.y) < 1.0,
+			"zoomed-in pan limits equal the zoomed-out limits (y)")
 	# Reset restores the default (no zoom) centered view.
 	level.ResetCamera()
 	await process_frame

@@ -20,7 +20,7 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - `scripts/TurnSystem.cs` — round-based initiative turn order (see below)
 - `dcyberpunkgam.csproj` / `dcyberpunkgam.sln` — .NET project (Godot.NET.Sdk 4.7.2, net8.0)
 - `run.sh` — builds the C# then launches the game with the Mono Godot binary (the command the user runs to play)
-- `tests/flow_test.gd` — headless SceneTree functional test (menu → level → 8-combatant initiative → rounds → movement range → BFS reachability → **move-mode path preview** (hover route line + endpoint circle, hide cases) → **camera panning + clamping** → **mouse click-to-move** (incl. click **behind** an obstacle/character via BFS detour) → once-per-turn + UNDO → enemy auto-move + auto turn-end → back). ~79 checks.
+- `tests/flow_test.gd` — headless SceneTree functional test (menu → level → 8-combatant initiative → rounds → movement range → BFS reachability → **move-mode path preview** (hover route line + endpoint circle, hide cases) → **camera panning + clamping + zoom/pan interaction** → **mouse click-to-move** (incl. click **behind** an obstacle/character via BFS detour) → once-per-turn + UNDO → enemy auto-move + auto turn-end → back). ~99 checks.
 - `tests/cutscene_test.gd` — headless functional test (menu → SCENE TEST → name-instant/body-typewriter reveal, speaker alternation, highlight, click-to-advance, back). ~19 checks.
 - `tests/resolution_test.gd` — headless test: menu RESOLUTION button cycles 1280x720 → 1600x900 → 1920x1080 → back
 - `tests/combat_test.gd` — headless combat test (equipment + random ranged AND melee weapon assignment, **circle-based shoot range (any direction, dx²+dy² ≤ range²) + LOS blocking by walls AND characters**, shooting-circle overlay, **weapon-based range/damage: pistol 4/2, rifle 6/3**, **melee: 4-adjacent-squares, knife 3 / katana 5, melee+shoot share the one action, melee-after-move recompute, enemy melee fallback when LOS blocked + enemy prefers shoot**, once-per-turn, WAIT, **enemy AI (move into shooting circle / hold + shoot or melee)**, **BioStim heal**, death removes token + skips turns, **END TURN button in the actions menu**, action-menu screen clamping). ~140 checks.
@@ -159,12 +159,23 @@ SCENE TEST button:
   first `_Process` where `Size` is valid; in headless test mode `Size` is
   (0,0) so it stays at the origin — flow_test's pan assertions rely on that).
   `Board.Position = -camera`; the board's children keep board-local coords;
-  only the board node moves. Test hooks: `ResetBoardBounds()` (restore the
-  real iso diamond bounds after `SetBoardPixelSize`) and `ResetCamera()`
-  (re-center). flow_test's camera section covers both the large-board edge
-  clamp AND the small-board centering + WASD-sticks case (the latter is what
-  used to be broken). The info panel is constrained (800px + autowrap) so
-  long text never overflows.
+  only the board node moves. **Mouse-wheel zoom** (`ZoomBoard`, via
+  `OnLevelGuiInput`) scales the board by `_cameraScale` (clamped
+  `ZoomMin` 0.75 .. `ZoomMax` 1.75, step `ZoomStep` 1.1) around the viewport
+  center. The pan clamp's view size is the window divided by **ZoomMin — NOT
+  the current scale** — and held constant across all zoom levels: the pan
+  limits are the borders of the MOST ZOOMED-OUT view, so a zoomed-in camera
+  can still pan to exactly those same edges (the board overflows the window,
+  which is normal zoom). Clamping to the current (smaller) zoomed-in view
+  instead shrank the pan range and left map corners unreachable. `ResetCamera`
+  resets both the position AND the scale to 1.0. Test hooks:
+  `ResetBoardBounds()` (restore the real iso diamond bounds after
+  `SetBoardPixelSize`), `ResetCamera()` (re-center + unzoom), `ZoomBy(dir)`
+  (one wheel notch), `GetCameraScale()`. flow_test's camera section covers
+  the large-board edge clamp (with the widest-view limit), the small-board
+  centering + WASD-sticks case, and the zoom/pan interaction (zoomed-in pan
+  range == zoomed-out pan range). The info panel is constrained (800px +
+  autowrap) so long text never overflows.
 - **Enemies act** (move first, then shoot, see the Combat section's "Enemy
   AI") after a short delay (12 frames) in `_Process`, then **automatically
   end their turn**. Guarded by `_enemyActed` so the turn ends exactly once.
