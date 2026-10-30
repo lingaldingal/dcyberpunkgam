@@ -6,19 +6,24 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - `GAMES.md` — game design outline (OUTDATED: references removed `CharacterData`; trust the code)
 - `project.godot` — main scene `res://scenes/main_menu.tscn`; `GameManager` C# autoload; `features` includes `C#`, `dotnet`
 - `scenes/main_menu.tscn` — title screen: NEW GAME / CONTINUE / SCENE TEST / RESOLUTION / QUIT
-- `scenes/level_01.tscn` — turn-based arena (20×12 grid board, 4 party + 4 enemy tokens, HUD, END TURN / UNDO / BACK)
+- `scenes/level_01.tscn` — turn-based arena (28×16 grid board, 4 party + 4 enemy tokens, top-right HUD panel w/ END TURN / UNDO / BACK, bottom-left actions menu with END TURN)
 - `scenes/scene_test.tscn` — basic 2D cutscene (two placeholder characters L/R, scrolling cheese dialogue, speaker highlight)
 - `scripts/GameManager.cs` — autoload: scene flow (StartGame / StartSceneTest / QuitToMenu); exposes `Instance`
 - `scripts/MainMenu.cs` — menu buttons incl. `OnResolutionPressed()` (cycles window size); `GetResolution()` test hook
-- `scripts/Level01.cs`, `scripts/SceneTest.cs`
-- `scripts/Character.cs` — combatant data (Name, Color, Agility, `IsEnemy`, `MovementRange` = 5 + Agility/2 floored)
+- `scripts/Level01.cs` (turn-based iso arena logic), `scripts/SceneTest.cs`
+- `scripts/IsoGrid.cs` — Node2D in the skewed `Iso` layer: draws floor diamonds, wall extrusion, move/shoot highlights + HP readouts in LOGICAL board pixels (the skew does the iso)
+- `scripts/TokenNode.cs` — Node2D per combatant under `Board/Iso`, draws a filled diamond at its cell corner; name rendered by Level01 as an unskewed Label overlay
+- `scripts/Character.cs` — combatant data (Name, Color, Agility, `IsEnemy`, `MovementRange` = 5 + Agility/2 floored, `Constitution`/`HitPoints`/`MaxHitPoints`, `Equipment`, `Items` inventory, `UseItem`/`GetItemCount`/`Heal`)
+- `scripts/Weapon.cs` — `Weapon` (Name, Range, Damage); built-ins `Pistol` (4/2) + `Rifle` (6/3)
+- `scripts/Item.cs` — `Item` (Name, HealValue); built-in `BioStim` (heal 6)
+- `scripts/Equipment.cs` — `Equipment` (Head, Body, Weapon) + `ToText()`
 - `scripts/TurnSystem.cs` — round-based initiative turn order (see below)
 - `dcyberpunkgam.csproj` / `dcyberpunkgam.sln` — .NET project (Godot.NET.Sdk 4.7.2, net8.0)
 - `run.sh` — builds the C# then launches the game with the Mono Godot binary (the command the user runs to play)
-- `tests/flow_test.gd` — headless SceneTree functional test (menu → level → 8-combatant initiative → rounds → movement range → BFS reachability → **camera panning + clamping** → **mouse click-to-move** → once-per-turn + UNDO → enemy auto-move + auto turn-end → back). ~52 checks.
+- `tests/flow_test.gd` — headless SceneTree functional test (menu → level → 8-combatant initiative → rounds → movement range → BFS reachability → **camera panning + clamping** → **mouse click-to-move** (incl. click **behind** an obstacle/character via BFS detour) → once-per-turn + UNDO → enemy auto-move + auto turn-end → back). ~60 checks.
 - `tests/cutscene_test.gd` — headless functional test (menu → SCENE TEST → name-instant/body-typewriter reveal, speaker alternation, highlight, click-to-advance, back). ~19 checks.
 - `tests/resolution_test.gd` — headless test: menu RESOLUTION button cycles 1280x720 → 1600x900 → 1920x1080 → back
-- `tests/combat_test.gd` — headless combat test (HP = 5 + Con values, actions menu placement + name, shoot range in 8 directions, 2 damage, once-per-turn, WAIT, death removes token + skips turns). ~35 checks.
+- `tests/combat_test.gd` — headless combat test (equipment + random weapon assignment, **circle-based shoot range (any direction, dx²+dy² ≤ range²) + LOS blocking by walls AND characters**, shooting-circle overlay, **weapon-based range/damage: pistol 4/2, rifle 6/3**, once-per-turn, WAIT, **enemy AI (move into shooting circle / hold + shoot)**, **BioStim heal**, death removes token + skips turns, **END TURN button in the actions menu**, action-menu screen clamping). ~100 checks.
 - `readme.me` — pre-existing file, untouched
 
 ## Cutscene (scene_test)
@@ -89,61 +94,147 @@ SCENE TEST button:
   `GetReachableCells()` that returned `Vector2I[]` — the array didn't export
   cleanly to GDScript, so it's a `bool` now.)
 - **Character movement is MOUSE-ONLY now.** Clicking a reachable tile jumps
-  there (BFS) via `OnBoardGuiInput` → `TryMoveToward`. The first move sets
+  there (BFS) via `OnBoardGuiInput` → `TryBoardClick` → `TryMoveToward`.
+  `TryBoardClick` resolves the board-local click with a single **inverse iso
+  projection** (`gx=floor((X+2Y)/T)`, `gy=floor((-X+2Y)/T)` — the exact
+  inverse of the cell-center forward projection) to the grid cell,
+  so clicks land in the cell the player sees even at cell edges. Clicking a
+  reachable tile (even **behind** an obstacle/character, as long as a BFS
+  detour stays within movement range) moves there. The first move sets
   `_movedThisTurn`; subsequent moves that turn are ignored. **UNDO** (button
   or `UndoMove()`) restores the turn-start cell and re-arms the move — allowed
   once, before END TURN. The reachable set is frozen to the turn-start
   position after a move (not recomputed from the new position) so the full
   range stays valid for the rest of the turn. (WASD no longer moves tokens —
   it now pans the camera, see below. The old `_Input` handler was removed.)
+  Tests emit clicks at `level.IsoCellCenter(Vector2i(x, y))` — the forward
+  cell-center projection — so headless click tests resolve to the exact cell.
+- **Isometric projection.** `level_01` is 2:1 iso. The `Board` Control holds
+  an `Iso` Node2D child with a skew `Transform2D(X=(.5,.25), Y=(-.5,.25))`.
+  Everything that must look skewed (floor, walls, highlights, tokens, range
+  overlay) is drawn inside `Iso` in **LOGICAL board pixels** (`x*TILE,
+  y*TILE`); the skew maps logical `(x,y)` → screen `((x-y)/2*TILE,
+  (x+y)/4*TILE)`. Name labels are unskewed `Label` Controls under `Board`,
+  repositioned via `IsoCellCenter` each frame. Inverse: `gx=(X+2Y)/T,
+  gy=(-X+2Y)/T` (`CellFromIso`). The iso board bounding box (`_isoBounds`,
+  board space) is `x:[-H*T/2, W*T/2]`, `y:[0,(W+H)*T/4]` — i.e. width
+  `(W+H)*T/2`, height `(W+H)*T/4`. **NOTE the negative left edge**: cell
+  (0,H) projects to board x = -H*T/2, so the diamond's left vertex is OFF
+  the origin. The camera clamps to THIS box (not a [0,size] box).
 - **Camera panning (WASD).** Levels can be far larger than the window
   (up to 2000×2000 grids), so the board is offset by `-camera` and **WASD /
   arrow keys pan the viewport** one tile per frame (`UpdateCamera` in
   `_Process`, `CameraPanSpeed` = one tile/frame). `_cameraPos` is the board
   pixel at the viewport's top-left; `ApplyCamera()` clamps it to
-  `[0, board - view]` per axis (so a board smaller than the window stays
-  pinned to the origin) and sets `Board.Position = -camera`. The board's
-  children keep board-local coords; only the board node moves. The info
-  panel is constrained (800px + autowrap) so long text never overflows.
-- **Enemies auto-move** one tile in a random walkable direction after a short
-  delay (12 frames) in `_Process`, then **automatically end their turn**
-  (enemies have no other actions yet). Guarded by `_enemyActed` so the turn
-  ends exactly once. `OnBoardGuiInput` bails when `_turns.Current.IsEnemy`.
-- Map is 20 cols × 12 rows; obstacles + token positions mean some short
-  straight-line targets need a detour (e.g. Vex at (1,1) can't reach (1,11)
-  directly because Rook at (1,2) blocks the column — the left column detour is
-  12 steps, just over Vex's range 11).
+  `[bounds.Min, bounds.Max - view]` per axis (a board smaller than the window
+  gets centered, not pinned — the min clamp uses the diamond's NEGATIVE left
+  edge so its left third isn't pinned off-screen). The camera **starts
+  centered** on the iso diamond (diamond center = board point
+  `((W-H)*T/4, (W+H)*T/8)` minus the viewport half-size; done once in the
+  first `_Process` where `Size` is valid; in headless test
+  mode `Size` is (0,0) so it stays at the origin — flow_test's pan assertions
+  rely on that). `Board.Position = -camera`; the board's children keep
+  board-local coords; only the board node moves. The info panel is
+  constrained (800px + autowrap) so long text never overflows.
+- **Enemies act** (move first, then shoot, see the Combat section's "Enemy
+  AI") after a short delay (12 frames) in `_Process`, then **automatically
+  end their turn**. Guarded by `_enemyActed` so the turn ends exactly once.
+  `OnBoardGuiInput` bails when `_turns.Current.IsEnemy` (no mouse control of
+  enemies).
+- Map is 28 cols × 16 rows, 71 obstacles (rows y=0..2 are a fully clear band;
+  the x=0 column is a clear vertical lane y=0..15 — both relied on by the
+  shoot tests). `StartCells`: party clustered top-left at (1,1)/(2,1)/(1,2)/
+  (2,2); enemies top-right at (26,1)/(25,1)/(26,2)/(25,2).
 - Scene has a third action button: **UNDO** (between END TURN and BACK).
   Test hooks: `HasMovedThisTurn() -> bool`, `UndoMove()`, `ForceEnemyMove()`
   (acts for the active enemy now: move + end turn), `GetCameraPos()`,
   `PanCameraBy(Vector2)`, `SetBoardPixelSize(float w, float h)` (treats the
-  board as that pixel size — exercises pan/clamp on a large board),
+  board as that pixel size — replaces `_isoBounds` with a plain `[0,w]x[0,h]`
+  box so the test exercises pan/clamp on a large board),
   `SetPanKey(Key)` (simulates a held WASD key for the next `_Process`,
   `Key.None` clears — used to test panning headless where `Input.IsKeyPressed`
   is never true).
 
-## Combat (HP, Shoot, Wait, Actions Menu)
+## Combat (HP, Weapons, Shoot, Wait, Items, Actions Menu)
 - **Constitution + HP**: every combatant has `Constitution` (7–13) and
-  `HitPoints = 5 + Constitution` (see `Character.cs`). Party: Vex 11,
-  Kaito 9, Rook 12, Mira 8. Enemies: Gutter 10, Slick 13, Brute 12, Wisp 7.
-  HP readout floats above each token and updates on damage.
-- **One action per turn** (`_actionUsed`): a party member picks exactly ONE of
-  SHOOT / MOVE / WAIT from the **actions menu** (bottom-left panel:
-  character name on top, SHOOT / MOVE / WAIT buttons; clamped to stay on
-  screen via `ClampActionMenu()`). Mode switching is free; performing the
-  action consumes it. UNDO re-arms the action.
-- **Shoot**: exactly 2 damage to an enemy standing exactly 4 squares away in
-  a straight line — horizontal, vertical, OR 45° diagonal (8 directions;
-  `IsShootTarget` + `ComputeShootTargets`). Valid targets highlight red in
-  shoot mode.
+  `HitPoints = 5 + Constitution` (`MaxHitPoints`; see `Character.cs`). Party:
+  Vex 11, Kaito 9, Rook 12, Mira 8. Enemies: Gutter 10, Slick 13, Brute 12,
+  Wisp 7. HP readout floats above each token and updates on damage.
+- **Per-turn budget** (one action + one move, latched independently): each
+  turn a party member may perform ONE action (SHOOT / WAIT / **BIOSTIM**) AND
+  ONE move — each latches itself (`_actionUsed` for the action,
+  `_movedThisTurn` for the move) but neither blocks the other. So shoot-then-
+  move, move-then-shoot, or just one of them all work. The **actions menu**
+  (bottom-left panel: name on top, an equipment readout line, SHOOT / MOVE /
+  WAIT / BIOSTIM buttons, and an **END TURN** button on the same row; clamped
+  on screen via `ClampActionMenu()`) shows the buttons as disabled once their
+  path is spent. Mode switching is free. UNDO re-arms both paths.
+- **HUD layout**: the debug/info panel (round/turn, per-char initiative,
+  move-range readout, END TURN / UNDO / BACK buttons) is a `PanelContainer`
+  pinned to the **top-right** corner (`Center/Panel` — `Center` is a plain
+  full-rect `Control`, NOT a CenterContainer: a CenterContainer re-centers
+  children and silently overrides the panel's anchors). Small font, ~408px
+  wide × 138px tall. The big center title label was removed.
+- **Weapons** (`Weapon.cs`): the equipped weapon drives the shoot mechanic —
+  the shoot range is a **CIRCLE**: any cell with
+  `dx*dx + dy*dy <= Weapon.Range^2` (distance 1..range, **any direction**)
+  with a clear line of sight can be hit, and a hit deals `Weapon.Damage`.
+  A shoot may be used **before or after the move**; a shot always fires from
+  the shooter's **CURRENT position** — moving recomputes the shoot-target set
+  from the new cell (`MovePartyTo` for the player's click-to-move and
+  `MoveTokenTo` for enemy/undo moves both call `ComputeShootTargets()` +
+  `RefreshHighlights()`).
+  `Weapon.Pistol` (range 4, dmg 2) and `Weapon.Rifle` (range 6, dmg 3) are the
+  two built-in weapons. `IsShootCell` / `ComputeShootTargets` / `TryShootAt`
+  are all weapon-aware (range + damage come from the active combatant's
+  `Equipment.Weapon`). In **shoot mode** a soft range overlay
+  (`_rangeCircle`, in the skewed `Iso` layer, radius = range tiles, centered
+  on the cell's LOGICAL center) is drawn around the active PARTY shooter so
+  the player can see the range (hidden for enemy turns / other modes). In
+  logical space it is a 45° square (corners at distance r); under the iso
+  skew it projects to an on-screen diamond with a SQUARE bounding box of side
+  `2*range*TILE`. Test hook `GetRangeCircle() -> float[4]` returns the
+  **board-space** `[x, y, w, h]` (center = iso cell center, w=h=2*range*TILE)
+  or `[-1,-1,-1,-1]` when hidden.
+- **Equipment** (`Equipment.cs`): head + body + weapon. Basic gear for now —
+  Ballistic Cap (head) + Weave Vest (body) + a **random** Pistol or Rifle for
+  ALL 8 combatants (assigned in `AssignStartingGear()`). `Equipment.ToText()`
+  → "Rifle · Ballistic Cap · Weave Vest" (shown in the actions menu + HUD).
+- **Items** (`Item.cs`): consumables with a `HealValue`. `Item.BioStim`
+  (heal 6) — party members start with **2** (enemies 0). Using one heals up to
+  `MaxHitPoints` and consumes the action. `Character.UseItem` /
+  `GetItemCount`.
+- **Line of sight**: a shot is only valid if the segment shooter→target is
+  clear — `HasLineOfSight(from, to, range)` walks the intermediate cells with
+  an integer **Bresenham** (exact 45° diagonals are walked one-by-one; other
+  slopes use the standard two-error algorithm) and fails if any intermediate
+  cell is a wall **or occupied by another character** — you cannot shoot
+  through obstacles or through other players/enemies. The target's own cell is
+  the endpoint, not an obstacle. `ComputeShootTargets` iterates EVERY cell in
+  the shooting circle from the CURRENT position and keeps the ones with clear
+  line of sight (a weapon hits at any distance 1..range inside the circle).
+- **Enemy AI** (`EnemyAct()`), same rules as the player: each enemy turn it
+  spends its one **move** via `EnemyMoveToward`, walking the BFS path toward
+  the **nearest** living party member, but it **stops as soon as the target is
+  inside its own weapon's shooting circle** (it moves INTO shooting range
+  rather than right up next to the player; if already inside the circle it
+  holds its position and doesn't move), then spends its one **action** via
+  `EnemyShoot` — from the new position it fires at that target if it is inside
+  its shooting circle with a clear line of sight. The move and shot latch
+  `_movedThisTurn` / `_actionUsed` exactly like the player's actions, so the
+  actions menu reflects the spent budgets. Auto-end turn (guarded by
+  `_enemyActed`). `FindNearestPartyMember` picks the target.
 - **Death**: HP ≤ 0 → `IsDead`; the token is hidden from the map, no longer
   blocks movement (`IsOccupiedBy` skips the dead), and `TurnSystem.EndTurn`
   skips dead combatants when advancing (round wraps when everyone is dead).
 - Test hooks: `GetHitPoints(string)`, `IsAlive(string)`, `IsShootTarget(int,
   int)`, `SetActionMode(ActionMode)`, `SetTokenCell(string, int, int)`,
-  `GetActionMenuPos()`, `ForceCurrent(string)`. NOTE: set tokens' cells
-  BEFORE `ForceCurrent` — shoot targets/move range are computed from the
-  active token's position in `SetActive()`.
+  `GetActionMenuPos()`, `ForceCurrent(string)`, `GetWeaponName(string)`,
+  `GetWeaponRange(string)`, `SetWeapon(string, bool isRifle)`,
+  `GetItemCount(string)`, `UseItem(string)`, `GetEquipment(string)`.
+  NOTE: set tokens' cells BEFORE `ForceCurrent` — shoot targets/move range are
+  computed from the active token's position in `SetActive()`. Tests pin
+  weapons with `SetWeapon` (and `SetInitiativeRolls`) for determinism.
 
 ## Resolution selector (MainMenu)
 `MainMenu` has a **RESOLUTION** button that cycles the window through three
@@ -187,9 +278,9 @@ binary. Build the C# first.
 GODOT=/home/bigal/Applications/GodotMono/Godot_v4.7.2-stable_mono_linux_x86_64/Godot_v4.7.2-stable_mono_linux.x86_64
 $GODOT --headless --path . --import                    # clean import check
 $GODOT --headless --path . --quit-after 120            # smoke run (main scene = menu)
-$GODOT --headless --path . -s res://tests/flow_test.gd      # functional flow test (52 checks)
+$GODOT --headless --path . -s res://tests/flow_test.gd      # functional flow test (60 checks)
 $GODOT --headless --path . -s res://tests/cutscene_test.gd  # cutscene test (19 checks)
-$GODOT --headless --path . -s res://tests/combat_test.gd    # combat: HP/shoot/death/actions menu (35 checks)
+$GODOT --headless --path . -s res://tests/combat_test.gd    # combat: weapons/items/enemy AI/shoot/death/actions menu (100 checks)
 ```
 Headless alone is NOT enough for UI: it never renders, so off-screen controls
 are invisible to it. There's a real Xorg at `DISPLAY=:0.0` (no Xvfb/xdotool here).
@@ -200,7 +291,9 @@ scene, `await process_frame` a few times, then
 build an `InputEventMouseButton` (left, pressed) and `Input.parse_input_event(p)`
 at the button's `get_global_rect().get_center()`, then the release event. Check
 the PNG has more than a handful of unique colors (flat = black screen); analyze
-with PIL.
+with PIL. `tests/_iso_shot.gd` (committed) is a ready-made example: it loads
+`level_01`, switches to shoot mode (shows the range overlay) and saves
+`tests/_iso_shot.png`.
 
 ## Menu layout gotcha (the black-screen bug)
 The original menu put `anchors_preset = 8` (center) on the Title/Buttons nodes
@@ -212,6 +305,20 @@ Fix: menu/stage content lives in a full-rect `CenterContainer` + `VBoxContainer`
 never mix `anchors_preset` with explicit `anchor_*` values that disagree.
 
 ## Gotchas
+- **Iso token/label paths**: tokens are `Node2D` `TokenNode`s under
+  `Board/Iso` (names `P0`..`P3`, `E0`..`E3`); tests must look them up at
+  `Board/Iso/P0`, not `Board/P0` (they're no longer `Control`s). Token
+  `position` is the LOGICAL cell corner (`x*TILE, y*TILE`); the iso skew is on
+  the parent `Iso` node, so `get_global_position()` already returns the skewed
+  screen/board-space point.
+- **IsoGrid degenerate polygons**: `Diamond(x,y)` returns corners in the order
+  `[right, bottom, left, top]`. Wall side-faces must use ADJACENT corners
+  `(right,bottom)` and `(bottom,left)`; using opposite corners makes a
+  degenerate line that spams `Invalid polygon data, triangulation failed`
+  (16k+ errors) and drags headless tests down to a crawl.
+- **Headless window `Size` is (0,0)**: in `--headless`/`-s` mode the viewport
+  has no size, so the one-time centered-camera init is skipped and the camera
+  stays at the origin (flow_test's pan/clamp assertions depend on that).
 - Fresh clones have no `.godot/` cache. A direct `godot --path .` run does NOT
   auto-import textures (`.godot/imported` stays empty), so any scene referencing
   imported assets fails to load on a fresh clone until `--import` is run once.

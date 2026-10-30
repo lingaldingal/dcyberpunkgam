@@ -11,10 +11,36 @@ namespace Dcyberpunkgam;
 /// The order is rolled once and persists for the rest of the encounter.
 ///
 /// Movement: the active combatant may move up to <see cref="Character.MovementRange"/>
-/// tiles (5 + Agility/2, floored). Clicking any reachable tile moves the
-/// combatant there along the shortest path that avoids obstacles and other
-/// tokens (BFS). Character movement is mouse-only; WASD instead pans the
-/// camera. Enemies auto-move one tile in a random direction on their turn.
+/// tiles (5 + Agility/2, floored) once per turn. Clicking any reachable tile
+/// moves the combatant there along the shortest path that avoids obstacles
+/// and other tokens (BFS). Character movement is mouse-only; WASD instead
+/// pans the camera.
+///
+/// Weapons + items: every combatant starts equipped with basic head/body gear
+/// and a randomly rolled pistol (range 4, 2 dmg) or rifle (range 6, 3 dmg).
+/// Shooting hits any target inside the weapon's shooting CIRCLE centered on
+/// the shooter (dx^2 + dy^2 <= range^2 — the "radius of the weapon's range"
+/// rule used by most tactics games, in ANY direction) with a clear line of
+/// sight (no obstacle or other character on the segment between them), for
+/// the weapon's damage. A shoot may be used before or after the move; a shot
+/// always fires from the shooter's CURRENT position. In shoot mode a soft
+/// circle of radius = weapon range is drawn around the active combatant so
+/// the player can see who is in range. Party members also start with
+/// BioStims (heal items).
+///
+/// Actions: per turn each combatant has ONE action (SHOOT / WAIT / item) and
+/// ONE move. Mode switching (SHOOT <-> MOVE) is free; using either budget
+/// latches it until END TURN (UNDO restores the turn-start cell and re-arms
+/// everything).
+///
+/// Enemy AI: enemies follow the same rules as the player — one action
+/// (shoot / wait / item) and one move per turn. On its turn an enemy
+/// approaches the nearest living party member along the BFS path, STOPPING
+/// as soon as it stands inside its weapon's shooting circle (target within
+/// range with a clear line of sight) — it moves into shooting range rather
+/// than right up to the player — then (from the new position) shoots it.
+/// The move and the shot each latch the same per-turn budgets a player uses,
+/// so the actions menu reflects what the enemy has spent.
 ///
 /// Camera: the board is a plain Control that can be far larger than the window
 /// (levels are up to 2000x2000 grids). <see cref="_cameraPos"/> is the top-left
@@ -23,19 +49,34 @@ namespace Dcyberpunkgam;
 /// </summary>
 public partial class Level01 : Control
 {
-    private const int GridWidth = 20;
-    private const int GridHeight = 12;
+    private const int GridWidth = 28;
+    private const int GridHeight = 16;
     private const int TileSize = 48;
     // One board tile per frame of WASD panning.
     private const int CameraPanSpeed = TileSize;
 
-    // Frames an enemy waits before acting, so its move is visible.
+    // --- Isometric projection --------------------------------------------
+    // The board is drawn as a 2:1 isometric grid: a logical board pixel
+    // (x, y) is shown at the "iso" screen point
+    //     iso = ((x - y) / 2, (x + y) / 4)
+    // implemented as the skew matrix X=(.5,.25) Y=(-.5,.25). The skewed
+    // "Iso" Node2D (a child of the Board Control) carries everything that
+    // must be skewed — the diamond floor, highlights, tokens, range circle —
+    // while plain Controls (token name labels, HUD, action menu) stay
+    // unskewed for readable text. All token positions are kept in ISO board
+    // space (see IsoBoard), so every existing "cell -> token.Position" path
+    // and test hook keeps working unchanged.
+    private Node2D _iso = null!;
+    private IsoGrid _grid = null!;
+
+    // Frames an enemy waits before acting, so its action is visible.
     private const int EnemyThinkFrames = 12;
 
-    // Shoot: target must be exactly this many squares away along one of the
-    // 8 straight lines (horizontal, vertical or diagonal), and deals 2 damage.
-    private const int ShootRange = 4;
-    private const int ShootDamage = 2;
+    // Basic gear everyone starts with; the weapon is rolled per combatant
+    // (pistol or rifle) — see AssignStartingGear.
+    private const string HeadGear = "Ballistic Cap";
+    private const string BodyGear = "Weave Vest";
+    private const int PartyBioStims = 2;
 
     public enum ActionMode { Move, Shoot }
 
@@ -44,21 +85,39 @@ public partial class Level01 : Control
         new(1, 0), new(-1, 0), new(0, 1), new(0, -1),
     };
 
-    // 1 = walkable, 0 = obstacle (placeholder layout, 12 rows x 20 cols).
+
+
+    // 1 = walkable, 0 = obstacle (16 rows x 28 cols).
+    //
+    // Layout notes (also relied on by the tests):
+    // - Rows y=0..2 are completely clear, so a token can shoot straight
+    //   east/west (and on the diagonals from those rows) without any wall in
+    //   the way.
+    // - The x=0 column is a clear, obstacle-free vertical lane (y=0..15) — a
+    //   long open detour along the west edge.
+    // - The x=6 column is clear from y=4..11 (walls at y=0..3 and y=12..15),
+    //   and row y=10 is clear from x=3..11 (walls at x=2 and x=12). These two
+    //   form a cross whose arms sit exactly at pistol/rifle range from the
+    //   open ground around them, so line-of-sight (no shooting through
+    //   obstacles) is easy to see and to test.
     private static readonly int[,] Walkable =
     {
-        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
-        { 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1 },
-        { 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1 },
-        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1 },
-        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1 },
-        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1 },
-        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1 },
-        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
-        { 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1 },
-        { 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1 },
-        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
-        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1 },
+        { 1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1 },
     };
 
     // Roster: party (0-3) then enemies (4-7). Token index == roster index.
@@ -78,13 +137,15 @@ public partial class Level01 : Control
     private static readonly (int X, int Y)[] StartCells =
     {
         (1, 1), (2, 1), (1, 2), (2, 2),          // party (left)
-        (17, 1), (18, 1), (17, 2), (18, 2),      // enemies (right)
+        (26, 1), (25, 1), (26, 2), (25, 2),      // enemies (right)
     };
 
-    private readonly List<Control> _tokens = new();
-    private readonly List<ColorRect> _tokenBodies = new();
-    private readonly List<ColorRect> _highlights = new();
-    private readonly List<Label> _tokenHpLabels = new();
+    private readonly List<Node2D> _tokens = new();
+    // Token name labels (unskewed Controls, children of the board).
+    private readonly List<Label> _tokenLabels = new();
+    // The shooting-range circle overlay (shoot mode, party turns only): a
+    // Polygon2D in the skewed Iso layer, so it appears as an iso ellipse.
+    private Polygon2D _rangeCircle = null!;
     private readonly System.Random _rng = new();
 
     private TurnSystem _turns = null!;
@@ -92,23 +153,25 @@ public partial class Level01 : Control
     private Dictionary<Vector2I, int> _reachable = new();
     private HashSet<Vector2I> _shootTargets = new();
 
-    // A party member may move once per turn; UNDO (before END TURN) re-arms.
+    // Per-turn budget: ONE action (shoot / wait / item) and ONE move. Mode
+    // switching is free; using either budget latches it until END TURN.
+    // UNDO (before END TURN) restores the turn-start cell and re-arms both.
     private bool _movedThisTurn;
     private Vector2I _turnStartCell;
-
-    // One action per turn: move, shoot, or wait. <see cref="_actionMode"/> is
-    // which board-click mode is active; <see cref="_actionUsed"/> latches once
-    // the combatant has acted this turn.
     private ActionMode _actionMode = ActionMode.Move;
     private bool _actionUsed;
 
     // The actions menu: a rectangular panel pinned to the bottom-left with the
-    // active character's name on top and the Shoot / Move / Wait buttons below.
+    // active character's name + equipment on top and the Shoot / Move / Wait /
+    // BioStim buttons below.
     private PanelContainer _actionMenu = null!;
     private Label _actionMenuName = null!;
+    private Label _actionMenuEquip = null!;
     private Button _shootButton = null!;
     private Button _moveButton = null!;
     private Button _waitButton = null!;
+    private Button _healButton = null!;
+    private Button _endTurnMenuButton = null!;
 
     // Enemy auto-move: armed when an enemy is active; fires after a short delay.
     private bool _enemyMoveArmed;
@@ -139,10 +202,35 @@ public partial class Level01 : Control
         _board.GuiInput += OnBoardGuiInput;
         foreach (var name in new[]
         {
-            "Center", "Center/Panel", "Center/Panel/Title",
+            "Center", "Center/Panel",
             "Center/Panel/HUD", "Center/Panel/HUD/Turn", "Center/Panel/HUD/Info",
         })
             GetNode<Control>(name).MouseFilter = MouseFilterEnum.Ignore;
+        // The top-right debug panel is a plain VBox on the board; give it a
+        // translucent background so the text stays readable over any tile.
+        var hudPanel = GetNode<Control>("Center/Panel");
+        hudPanel.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+        {
+            BgColor = new Color(0.05f, 0.06f, 0.09f, 0.65f),
+            BorderColor = new Color(0.35f, 0.6f, 0.9f, 0.35f),
+            BorderWidthLeft = 1,
+            BorderWidthTop = 1,
+            BorderWidthRight = 1,
+            BorderWidthBottom = 1,
+            CornerRadiusTopLeft = 6,
+            CornerRadiusTopRight = 6,
+            CornerRadiusBottomLeft = 6,
+            CornerRadiusBottomRight = 6,
+            ContentMarginLeft = 8,
+            ContentMarginTop = 6,
+            ContentMarginRight = 8,
+            ContentMarginBottom = 6,
+        });
+        AssignStartingGear();
+        // BuildBoard reads each combatant's HP for the grid's HP readouts, so
+        // the turn system (which owns the live combatant list) must exist first.
+        _turns = new TurnSystem(Roster.ToList());
+        _turns.StartEncounter();
         BuildBoard();
         BuildActionMenu();
         InitializeCamera();
@@ -156,13 +244,21 @@ public partial class Level01 : Control
         _undoButton.Pressed += OnUndoPressed;
         _backButton.Pressed += OnBackPressed;
 
-        _turns = new TurnSystem(Roster.ToList());
-        _turns.StartEncounter();
         SetActive();
     }
 
     public override void _Process(double delta)
     {
+        // First frame after layout: center the camera on the board (the
+        // viewport Size is only valid once the tree has been laid out; in
+        // headless test mode it is (0,0) and the camera stays at the origin).
+        if (!_cameraCentered)
+        {
+            _cameraCentered = true;
+            if (Size.X > 0 && Size.Y > 0)
+                CenterCamera();
+        }
+
         // Delayed enemy action: count down frames, then move — but only while
         // the armed combatant is still current (a turn change re-arms).
         if (_enemyMoveArmed && _turnActive && _turns.Current.IsEnemy)
@@ -171,11 +267,12 @@ public partial class Level01 : Control
             if (_enemyMoveFrames <= 0)
             {
                 _enemyMoveArmed = false;
-                DoEnemyMove();
+                EnemyAct();
             }
         }
 
         UpdateCamera((float)delta);
+        UpdateTokenLabels();
         ClampActionMenu();
     }
 
@@ -232,15 +329,23 @@ public partial class Level01 : Control
     // The board's pixel extent. Equals Grid*TileSize for the level's own grid,
     // but is configurable (see SetBoardPixelSize) so the panning/clamping logic
     // can be exercised against a large board (e.g. a 2000x2000 level).
-    private float _boardPixelW;
-    private float _boardPixelH;
+    //
+    // The ISO board's bounding box in BOARD SPACE. The 2:1 skew maps the
+    // logical (W x H) board to a diamond whose bounding box is
+    //   x: [-H*T/2,  W*T/2]   (width  (W+H)*T/2)
+    //   y: [ 0,      (W+H)*T/4]   (height (W+H)*T/4)
+    // NOTE the negative left edge: cell (0,H) projects to board x = -H*T/2.
+    // The camera clamps to THIS box (not a [0, size] box), otherwise the
+    // left third of the diamond is pinned off-screen.
+    private Rect2 _isoBounds;
 
-    // Clamp the camera to the board and apply it. The board is a plain
-    // Control, so it is shown by offsetting it by -camera (the board's own
-    // children keep their board-local coordinates; only the board moves).
-    // The camera is the board pixel at the viewport's top-left, so it is
-    // always >= 0 and, when the board is larger than the viewport in a
-    // dimension, at most (board - view) in that dimension.
+    // Clamp the camera to the ISO board's bounding box and apply it. The board
+    // is a plain Control, so it is shown by offsetting it by -camera (the
+    // board's own children keep their board-local coordinates; only the board
+    // moves). The camera is the board pixel at the viewport's top-left; it is
+    // clamped to [bounds.Min, bounds.Max - view] per axis, so a board smaller
+    // than the viewport in a dimension is centered (negative board offset),
+    // and a larger one clamps at the edges.
     private void ApplyCamera()
     {
         if (_board == null)
@@ -249,35 +354,99 @@ public partial class Level01 : Control
         float viewW = Size.X > 0 ? Size.X : 1;
         float viewH = Size.Y > 0 ? Size.Y : 1;
 
-        float maxX = Mathf.Max(0f, _boardPixelW - viewW);
-        float maxY = Mathf.Max(0f, _boardPixelH - viewH);
+        float minX = Mathf.Min(_isoBounds.Position.X, _isoBounds.End.X - viewW);
+        float minY = Mathf.Min(_isoBounds.Position.Y, _isoBounds.End.Y - viewH);
         _cameraPos = new Vector2(
-            Mathf.Clamp(_cameraPos.X, 0f, maxX),
-            Mathf.Clamp(_cameraPos.Y, 0f, maxY));
+            Mathf.Clamp(_cameraPos.X, minX, _isoBounds.End.X - viewW),
+            Mathf.Clamp(_cameraPos.Y, minY, _isoBounds.End.Y - viewH));
 
         _board.Position = -_cameraPos;
     }
 
     private void InitializeCamera()
     {
-        _boardPixelW = GridWidth * TileSize;
-        _boardPixelH = GridHeight * TileSize;
-        // Start pinned to the board's top-left corner.
-        _cameraPos = Vector2.Zero;
+        // The board's on-screen (ISO) bounding box (see _isoBounds comment).
+        _isoBounds = new Rect2(
+            -GridHeight * TileSize / 2f, 0f,
+            (GridWidth + GridHeight) * TileSize / 2f,
+            (GridWidth + GridHeight) * TileSize / 4f);
+        // The viewport Size is not laid out until after _Ready, so the actual
+        // centering is deferred to the first _Process frame (see _Process).
         ApplyCamera();
     }
 
-    /// <summary>Test hook: treat the board as <paramref name="pixels"/> wide/tall.</summary>
+    // The viewport Size is not laid out until after _Ready, so the actual
+    // centering is deferred to the first _Process frame (see _Process).
+    private bool _cameraCentered;
+
+    private void CenterCamera()
+    {
+        _cameraCentered = true;
+        // Start centered on the ISO diamond: the diamond's center is the
+        // board-space point ((W-H)*T/4, (W+H)*T/8); the camera is the board
+        // pixel at the viewport's top-left, i.e. that center minus the
+        // viewport's half-size. Clamped for boards smaller than the viewport.
+        var center = new Vector2(
+            (GridWidth - GridHeight) * TileSize / 4f,
+            (GridWidth + GridHeight) * TileSize / 8f);
+        _cameraPos = center - new Vector2(Size.X / 2f, Size.Y / 2f);
+        ApplyCamera();
+    }
+
+    /// <summary>Test hook: center the camera on the board again.</summary>
+    public void ResetCamera()
+    {
+        CenterCamera();
+    }
+
+    // --- Iso coordinate helpers ------------------------------------------
+    // Tokens, the floor grid and the range circle all live in LOGICAL board
+    // space as children of the skewed "Iso" Node2D, so the 2:1 iso projection
+    // is applied to their rendering automatically. The inverse helpers below
+    // convert a board-local (GUI / ISO) point back to a grid cell, and map a
+    // logical point to its on-screen (board-space) position for the unskewed
+    // name labels.
+
+    // A logical board point to its board-space (on-screen, pre-camera) point.
+    public Vector2 IsoBoard(Vector2 logical)
+        => new((logical.X - logical.Y) / 2f, (logical.X + logical.Y) / 4f);
+
+    public Vector2 IsoCell(Vector2I cell)
+        => IsoBoard(new Vector2(cell.X * TileSize, cell.Y * TileSize));
+
+    public Vector2 IsoCellCenter(Vector2I cell)
+        => IsoBoard(new Vector2((cell.X + 0.5f) * TileSize, (cell.Y + 0.5f) * TileSize));
+
+    // The inverse projection: a board-local (ISO) point back to a grid cell.
+    public Vector2I CellFromIso(Vector2 iso)
+    {
+        float gx = (iso.X + 2f * iso.Y) / TileSize;
+        float gy = (-iso.X + 2f * iso.Y) / TileSize;
+        return new Vector2I((int)Mathf.Floor(gx), (int)Mathf.Floor(gy));
+    }
+
+    // The grid cell a token currently occupies (tokens are stored in logical
+    // board space, so this is a straight division).
+    private Vector2I TokenCell(int index)
+        => new Vector2I((int)(_tokens[index].Position.X / TileSize),
+                        (int)(_tokens[index].Position.Y / TileSize));
+
+    /// <summary>Test hook: treat the board's on-screen extent as w x h.</summary>
     public void SetBoardPixelSize(float w, float h)
     {
-        _boardPixelW = w;
-        _boardPixelH = h;
+        // Rebuild the bounding box as a plain [0, w] x [0, h] area so the
+        // pan/clamp test can exercise edge clamping with the familiar
+        // (0,0) origin. (The real board uses the ISO diamond's true bounds,
+        // which have a negative left edge — see InitializeCamera.)
+        _isoBounds = new Rect2(0f, 0f, w, h);
         ApplyCamera();
     }
 
     private void OnBoardGuiInput(InputEvent @event)
     {
-        if (!_turnActive || _turns.Current.IsEnemy || _actionUsed)
+        // Each party turn allows ONE action (shoot) and ONE move; each path
+        // latches itself (see MoveTo / TryShootAt).
+        if (!_turnActive || _turns.Current.IsEnemy)
             return;
         if (@event is InputEventMouseButton mouse && mouse.Pressed && mouse.ButtonIndex == MouseButton.Left)
             TryBoardClick(mouse.Position);
@@ -373,7 +542,7 @@ public partial class Level01 : Control
                 break;
             }
         }
-        return index < 0 ? default : (Vector2I)(_tokens[index].Position / TileSize);
+        return index < 0 ? default : TokenCell(index);
     }
 
     /// <summary>Test hook: the board pixel the viewport's top-left is at.</summary>
@@ -422,6 +591,24 @@ public partial class Level01 : Control
     /// <summary>Test hook: the actions menu's position and size.</summary>
     public Vector2 GetActionMenuPos() => _actionMenu.Position;
 
+    /// <summary>
+    /// Test hook: the shooting-range overlay as [x, y, width, height] — the
+    /// board-space bounding box of the iso range diamond — when visible, or
+    /// [-1, -1, -1, -1] when hidden. The overlay is a logical diamond (a
+    /// 45-degree square with corners at distance r = range*TILE on the logical
+    /// axes); under the iso skew that projects to a diamond on screen whose
+    /// bounding box is a square of side 2r centered on the cell's board-space
+    /// (iso) center.
+    /// </summary>
+    public float[] GetRangeCircle()
+    {
+        if (_rangeCircle == null || !_rangeCircle.Visible)
+            return new[] { -1f, -1f, -1f, -1f };
+        int radius = _turns.Combatants[_turns.CurrentIndex].Equipment.Weapon.Range * TileSize;
+        var c = IsoCellCenter(CurrentCell());    // board-space center
+        return new[] { c.X - radius, c.Y - radius, radius * 2f, radius * 2f };
+    }
+
     private int IndexOf(string name)
     {
         for (int i = 0; i < Roster.Length; i++)
@@ -430,6 +617,106 @@ public partial class Level01 : Control
                 return i;
         }
         return -1;
+    }
+
+    // --- Equipment + items -------------------------------------------------
+
+    // Give every combatant basic head/body gear and a randomly rolled weapon
+    // (50/50 pistol or rifle). Party members also start with BioStims.
+    private void AssignStartingGear()
+    {
+        for (int i = 0; i < Roster.Length; i++)
+        {
+            var c = Roster[i];
+            var weapon = _rng.Next(2) == 0 ? Weapon.Pistol : Weapon.Rifle;
+            c.Equipment = new Equipment(HeadGear, BodyGear, weapon);
+            if (!c.IsEnemy)
+                c.Items[Item.BioStim] = PartyBioStims;
+        }
+    }
+
+    /// <summary>The named combatant's equipped weapon name ("" if unknown).</summary>
+    public string GetWeaponName(string name)
+    {
+        int index = IndexOf(name);
+        return index < 0 ? "" : Roster[index].Equipment.Weapon.Name;
+    }
+
+    /// <summary>The named combatant's weapon range in squares.</summary>
+    public int GetWeaponRange(string name)
+    {
+        int index = IndexOf(name);
+        return index < 0 ? 0 : Roster[index].Equipment.Weapon.Range;
+    }
+
+    /// <summary>The named combatant's weapon damage per hit.</summary>
+    public int GetWeaponDamage(string name)
+    {
+        int index = IndexOf(name);
+        return index < 0 ? 0 : Roster[index].Equipment.Weapon.Damage;
+    }
+
+    /// <summary>Test hook: swap a combatant's weapon (recomputes if they are active).</summary>
+    public void SetWeapon(string name, bool rifle)
+    {
+        int index = IndexOf(name);
+        if (index < 0)
+            return;
+        Roster[index].Equipment = new Equipment(HeadGear, BodyGear, rifle ? Weapon.Rifle : Weapon.Pistol);
+        if (index == _turns.CurrentIndex)
+        {
+            ComputeShootTargets();
+            RefreshHighlights();
+        }
+        UpdateActionMenu();
+    }
+
+    /// <summary>Test hook: a combatant's equipped head/body gear text.</summary>
+    public string GetEquipment(string name)
+    {
+        int index = IndexOf(name);
+        return index < 0 ? "" : Roster[index].Equipment.ToText();
+    }
+
+    /// <summary>How many BioStims the named combatant is carrying.</summary>
+    public int GetItemCount(string name)
+    {
+        int index = IndexOf(name);
+        return index < 0 ? 0 : Roster[index].GetItemCount(Item.BioStim);
+    }
+
+    /// <summary>
+    /// Test hook: use one BioStim for the named combatant (heal + decrement),
+    /// regardless of whose turn it is. Returns false if none were available.
+    /// </summary>
+    public bool UseItem(string name)
+    {
+        int index = IndexOf(name);
+        if (index < 0)
+            return false;
+        var c = Roster[index];
+        if (c.UseItem(Item.BioStim))
+        {
+            RefreshTokenHp(index);
+            UpdateActionMenu();
+            return true;
+        }
+        return false;
+    }
+
+    // The active party member spends its action using a BioStim (if it has one
+    // and is below full HP).
+    private void OnHealPressed()
+    {
+        if (!_turnActive || _turns.Current.IsEnemy || _actionUsed)
+            return;
+        var c = _turns.Current;
+        if (c.UseItem(Item.BioStim))
+        {
+            _infoLabel.Text = $"{c.Name} uses a BioStim and recovers {Item.BioStim.HealValue} HP ({c.HitPoints} HP)";
+            RefreshTokenHp(_turns.CurrentIndex);
+            MarkActionUsed();
+        }
     }
 
     // --- Turn / movement --------------------------------------------------
@@ -444,8 +731,10 @@ public partial class Level01 : Control
         _turnStartCell = CurrentCell();
         _turnLabel.Text = $"ROUND {_turns.Round} — TURN: {_turns.Current.Name}";
         _infoLabel.Text = BuildInitiativeInfo();
-        for (int i = 0; i < _tokenBodies.Count; i++)
-            _tokenBodies[i].Modulate = i == index ? Colors.White : new Color(1, 1, 1, 0.55f);
+        // Active token glows full-bright, the rest dim (modulate also covers
+        // the token's name label).
+        for (int i = 0; i < _tokens.Count; i++)
+            _tokens[i].Modulate = i == index ? Colors.White : new Color(1, 1, 1, 0.55f);
         _reachable = ComputeDistances(CurrentCell(), _turns.Current.MovementRange, index);
         ComputeShootTargets();
         RefreshHighlights();
@@ -464,7 +753,7 @@ public partial class Level01 : Control
             parts.Add($"{c.Name} {c.Agility}+{_turns.Roll[i]}{(c.IsEnemy ? " (E)" : "")}");
         }
         return string.Join(" · ", parts)
-            + "  —  initiative d5 + Agility sets order (high first) · move = 5 + Agi/2 · one action per turn (SHOOT / MOVE / WAIT) · shoot = 2 dmg, 4 squares in a straight line · HP = 5 + Con · WASD pans the map · END TURN";
+            + "  —  initiative d5 + Agility sets order (high first) · move = 5 + Agi/2 · per turn: ONE action (SHOOT / WAIT / BioStim) + ONE move · shoot = weapon's range CIRCLE (pistol 4 / rifle 6), no shooting through walls or characters, weapon dmg (2 / 3) · HP = 5 + Con · WASD pans the map · END TURN";
     }
 
     // BFS: shortest-path distance from <start> to every reachable tile, treating
@@ -498,33 +787,57 @@ public partial class Level01 : Control
         return dist;
     }
 
-    private void MoveTo(Vector2I next)
+    // Distance from <start> to <cell> in a BFS map where <cell> may itself be
+    // a "wall" (a token's own cell, e.g. a party member the enemy targets).
+    // Falls back to a neighbour's distance + 1, or int.MaxValue if unreachable.
+    private static int DistanceToCell(Dictionary<Vector2I, int> dist, Vector2I cell)
     {
-        if (!_reachable.ContainsKey(next))
-            return;
-        MovePartyTo(next);
-        MarkActionUsed();
+        if (dist.TryGetValue(cell, out int d))
+            return d;
+        int best = int.MaxValue;
+        foreach (var dir in Dirs)
+        {
+            var n = cell + dir;
+            if (dist.TryGetValue(n, out int dn) && dn + 1 < best)
+                best = dn + 1;
+        }
+        return best;
     }
 
-    private void TryBoardClick(Vector2 localPos)
+    private void MoveTo(Vector2I next)
     {
-        var cell = new Vector2I((int)(localPos.X / TileSize), (int)(localPos.Y / TileSize));
+        if (_movedThisTurn || !_reachable.ContainsKey(next))
+            return;
+        MovePartyTo(next);
+    }
+
+    private void TryBoardClick(Vector2 boardPos)
+    {
+        // Board clicks arrive in ISO board space (the board is a Control, so
+        // GuiInput coordinates are board-local). A single inverse projection
+        // maps them back to a grid cell — no snapping to logical coordinates
+        // (that hijacked clicks near logical cell centers to the wrong iso
+        // cell, which broke "move around the obstacle" clicks). Tests emit
+        // clicks at IsoCellCenter, which this projects back exactly.
+        var cell = CellFromIso(boardPos);
         if (_actionMode == ActionMode.Shoot)
             TryShootAt(cell);
         else
             MoveTo(cell);
     }
 
-    // Shoot: the target must sit exactly ShootRange squares away along one of
-    // the 8 straight lines (horizontal, vertical, diagonal). Deals 2 damage.
+    // Shoot: the target must sit inside the active combatant's weapon's
+    // shooting CIRCLE (dx^2+dy^2 <= range^2, any direction) with a clear line
+    // of sight — from the combatant's CURRENT position, whether or not it has
+    // moved this turn. Deals the weapon's damage.
     private void TryShootAt(Vector2I cell)
     {
-        if (!_shootTargets.Contains(cell))
+        if (_actionUsed || !_shootTargets.Contains(cell))
             return;
         int targetIndex = -1;
         for (int i = 0; i < _tokens.Count; i++)
         {
-            if ((Vector2I)(_tokens[i].Position / TileSize) == cell)
+            if (TokenCell(i) == cell)
             {
                 targetIndex = i;
                 break;
@@ -535,12 +848,23 @@ public partial class Level01 : Control
         var target = _turns.Combatants[targetIndex];
         if (target.IsDead)
             return;
-        target.HitPoints -= ShootDamage;
-        _infoLabel.Text = $"{_turns.Current.Name} shoots {target.Name} for {ShootDamage} ({target.HitPoints} HP left)";
+        ApplyShot(_turns.CurrentIndex, targetIndex);
+        MarkActionUsed();
+    }
+
+    // Common shot application: weapon damage on the target, HUD line, token
+    // HP update, death removal. Shared by the party's shoot action and the
+    // enemy AI.
+    private void ApplyShot(int shooterIndex, int targetIndex)
+    {
+        var shooter = _turns.Combatants[shooterIndex];
+        var target = _turns.Combatants[targetIndex];
+        int damage = shooter.Equipment.Weapon.Damage;
+        target.HitPoints -= damage;
+        _infoLabel.Text = $"{shooter.Name} shoots {target.Name} with the {shooter.Equipment.Weapon.Name} for {damage} ({target.HitPoints} HP left)";
         RefreshTokenHp(targetIndex);
         if (target.IsDead)
             KillToken(targetIndex);
-        MarkActionUsed();
     }
 
     // One action per turn: once the active combatant has moved, shot or waited,
@@ -563,12 +887,11 @@ public partial class Level01 : Control
     private void OnShootModePressed() => SetActionMode(ActionMode.Shoot);
     private void OnMoveModePressed() => SetActionMode(ActionMode.Move);
 
-    // Switch the board-click mode. Re-arms the action so the combatant can act
-    // in the new mode (mode switching itself does not consume the action).
+    // Switch the board-click mode. Mode switching is free: it does not
+    // consume or re-arm either of the turn's budgets (one action + one move).
     public void SetActionMode(ActionMode mode)
     {
         _actionMode = mode;
-        _actionUsed = false;
         UpdateActionMenu();
         RefreshHighlights();
     }
@@ -577,6 +900,10 @@ public partial class Level01 : Control
     {
         _tokens[index].Position = new Vector2(cell.X * TileSize, cell.Y * TileSize);
         _reachable = ComputeDistances(cell, _turns.Combatants[index].MovementRange, index);
+        // A move changes where shots are fired from: refresh the shoot-target
+        // set from the new position so a shoot-after-move aims from here.
+        if (index == _turns.CurrentIndex)
+            ComputeShootTargets();
         RefreshHighlights();
     }
 
@@ -586,45 +913,162 @@ public partial class Level01 : Control
     // remain valid for the rest of the turn.
     private void MovePartyTo(Vector2I next)
     {
-        if (_movedThisTurn)
-            return;
         _tokens[_turns.CurrentIndex].Position = new Vector2(next.X * TileSize, next.Y * TileSize);
         _movedThisTurn = true;
+        // A move changes where shots are fired from: refresh the shoot-target
+        // set from the new position so a shoot-after-move aims from here.
+        ComputeShootTargets();
+        RefreshHighlights();
     }
 
-    /// <summary>Test hook: act for the active enemy now (move + end turn).</summary>
-    public void ForceEnemyMove() => DoEnemyMove();
+    /// <summary>Test hook: act for the active enemy now (AI move + shoot + end turn).</summary>
+    public void ForceEnemyMove() => EnemyAct();
 
-    // Enemy auto-move: step one tile in a random free direction, then end
-    // the enemy's turn (enemies have no other actions yet). Guarded so it
-    // fires exactly once per turn.
-    private void DoEnemyMove()
+    // Enemy AI (same rules as the player: one action + one move per turn):
+    // the enemy spends its full movement range walking the BFS path toward
+    // the nearest living party member, then shoots it — from the new
+    // position — if it ended up at weapon range with a clear line of sight.
+    // The move and the shot each latch the same per-turn budgets a player's
+    // actions use (_movedThisTurn / _actionUsed), so the actions menu shows
+    // exactly what the enemy has spent. Then its turn ends automatically.
+    // Guarded so it acts exactly once per turn.
+    private void EnemyAct()
     {
         if (_enemyActed)
             return;
         _enemyActed = true;
         int index = _turns.CurrentIndex;
-        var from = CurrentCell();
-        var options = new List<Vector2I>();
-        foreach (var dir in Dirs)
+        int targetIndex = FindNearestPartyMember(index);
+        if (targetIndex < 0)
         {
-            var next = from + dir;
-            if (next.X < 0 || next.X >= GridWidth || next.Y < 0 || next.Y >= GridHeight)
-                continue;
-            if (Walkable[next.Y, next.X] != 1 || IsOccupiedBy(next, index))
-                continue;
-            options.Add(next);
+            // No living party member reachable (or all dead): just end the turn.
+            _turns.EndTurn();
+            SetActive();
+            return;
         }
-        if (options.Count > 0)
-            MoveTokenTo(index, options[_rng.Next(options.Count)]);
+
+        EnemyMoveToward(index, targetIndex);
+        EnemyShoot(index, targetIndex);
         // Enemy has acted: advance to the next combatant.
         _turns.EndTurn();
         SetActive();
     }
 
+    // Nearest living party member by BFS path distance from <index> (-1 if
+    // none is reachable or all are dead). A party member's own token cell is
+    // a BFS "wall", so DistanceToCell also accepts a cell whose neighbour is
+    // in the map (distance = 1 more).
+    private int FindNearestPartyMember(int index)
+    {
+        var dist = ComputeDistances(CurrentCell(), int.MaxValue, index);
+        int targetIndex = -1;
+        int best = int.MaxValue;
+        for (int i = 0; i < _turns.Combatants.Count; i++)
+        {
+            var c = _turns.Combatants[i];
+            if (c.IsEnemy || c.IsDead)
+                continue;
+            int d = DistanceToCell(dist, TokenCell(i));
+            if (d < best)
+            {
+                best = d;
+                targetIndex = i;
+            }
+        }
+        return targetIndex;
+    }
+
+    // The enemy's one move for the turn: it approaches <targetIndex> along
+    // the BFS path but STOPS as soon as it stands inside the target's shooting
+    // circle (target within the weapon's range with a clear line of sight), so
+    // it moves INTO shooting range instead of right up to the party member.
+    // If it can already shoot, it doesn't move at all. It also stops when
+    // adjacent (the target's token is a BFS "wall") or boxed in by obstacles.
+    // Latches the move budget exactly like a player's move.
+    private void EnemyMoveToward(int index, int targetIndex)
+    {
+        var enemy = _turns.Combatants[index];
+        var targetCell = TokenCell(targetIndex);
+        int range = enemy.Equipment.Weapon.Range;
+        if (CanShootAt(CurrentCell(), targetCell, range))
+            return; // already in shooting range: hold position, let the shot land
+        int steps = enemy.MovementRange;
+        var pos = CurrentCell();
+        while (steps-- > 0)
+        {
+            // BFS from the target treating the ENEMY as the moving token, so
+            // the enemy's own cell is in the map (its distance = how far it
+            // still is). The target's token is a wall, so once adjacent no
+            // neighbour can get any closer.
+            var toward = ComputeDistances(targetCell, int.MaxValue, index);
+            if (!toward.TryGetValue(pos, out int curD))
+                break; // boxed in by obstacles
+            if (curD <= 1)
+                break; // adjacent to the target: its cell is the wall
+            Vector2I? step = null;
+            int bestStep = int.MaxValue;
+            foreach (var dir in Dirs)
+            {
+                var next = pos + dir;
+                if (next.X < 0 || next.X >= GridWidth || next.Y < 0 || next.Y >= GridHeight)
+                    continue;
+                if (Walkable[next.Y, next.X] != 1 || IsOccupiedBy(next, index))
+                    continue;
+                if (!toward.TryGetValue(next, out int d))
+                    continue;
+                if (d < bestStep)
+                {
+                    bestStep = d;
+                    step = next;
+                }
+            }
+            if (step == null || bestStep >= curD)
+                break; // no neighbour is any closer: stop (adjacent or boxed)
+            pos = step.Value;
+            // A single step cannot jump OUT of the shooting circle (the max
+            // in-circle distance is ~range*1.414, so one tile keeps the enemy
+            // inside), so the first in-circle step is a valid stopping point.
+            if (CanShootAt(pos, targetCell, range))
+                break;
+        }
+        if (pos != CurrentCell())
+        {
+            MoveTokenTo(index, pos);
+            _movedThisTurn = true;
+            UpdateActionMenu();
+        }
+    }
+
+    // Can a shooter standing on <from> hit <cell> with a weapon of <range>?
+    // <cell> must sit inside the weapon's shooting circle (dx^2 + dy^2 <=
+    // range^2) with a clear line of sight (no obstacle or other token on the
+    // segment). Used by the enemy AI to decide where to stop and what to fire.
+    private bool CanShootAt(Vector2I from, Vector2I cell, int range)
+    {
+        return IsShootCell(from, cell, range) && HasLineOfSight(from, cell, range);
+    }
+
+    // The enemy's action: if <targetIndex> is inside its weapon's shooting
+    // circle from the enemy's CURRENT position with a clear line of sight,
+    // shoot it (weapon damage). Latches the action budget exactly like a
+    // player's shoot.
+    private void EnemyShoot(int index, int targetIndex)
+    {
+        var enemy = _turns.Combatants[index];
+        int weaponRange = enemy.Equipment.Weapon.Range;
+        var from = CurrentCell();
+        var cell = TokenCell(targetIndex);
+        if (CanShootAt(from, cell, weaponRange))
+        {
+            ApplyShot(index, targetIndex);
+            _actionUsed = true;
+            UpdateActionMenu();
+        }
+    }
+
     private Vector2I CurrentCell()
     {
-        return (Vector2I)(_tokens[_turns.CurrentIndex].Position / TileSize);
+        return TokenCell(_turns.CurrentIndex);
     }
 
     // A cell is occupied by a LIVE token. Dead tokens are removed from the map
@@ -637,37 +1081,117 @@ public partial class Level01 : Control
                 continue;
             if (_tokens[i].Visible == false)
                 continue;
-            if ((Vector2I)(_tokens[i].Position / TileSize) == cell)
+            if (TokenCell(i) == cell)
                 return true;
         }
         return false;
     }
 
-    // A combatant is a shoot target iff it is alive and sits exactly
-    // ShootRange squares away from <from> along one of the 8 straight lines
-    // (horizontal, vertical, diagonal).
-    private bool IsShootTarget(Vector2I from, Vector2I to)
+    // <to> is a shoot position for a weapon of <range> iff it sits inside the
+    // weapon's shooting CIRCLE centered on <from>: dx^2 + dy^2 <= range^2
+    // (any direction, any distance 1..range — the classic "radius of the
+    // weapon's range" rule used by most tactics games).
+    private static bool IsShootCell(Vector2I from, Vector2I to, int range)
     {
         int dx = to.X - from.X;
         int dy = to.Y - from.Y;
-        return (Math.Abs(dx) == ShootRange && dy == 0)
-            || (Math.Abs(dy) == ShootRange && dx == 0)
-            || (Math.Abs(dx) == ShootRange && Math.Abs(dy) == ShootRange);
+        return (dx != 0 || dy != 0) && dx * dx + dy * dy <= range * range;
     }
 
-    // Rebuild the shoot-target set for the active combatant.
+    // Clear line of sight from <from> to <to> (a cell within the weapon's
+    // shooting circle): every INTERMEDIATE cell on the straight segment
+    // between them must be walkable and hold no live token — so a shot cannot
+    // pass through obstacles or through other characters. The segment is
+    // walked one cell at a time with an integer Bresenham (horizontal,
+    // vertical, diagonal and sub-diagonal slopes alike); the target's own
+    // cell is the endpoint and not an obstacle.
+    private bool HasLineOfSight(Vector2I from, Vector2I to, int range)
+    {
+        if (!IsShootCell(from, to, range))
+            return false;
+        int dx = to.X - from.X;
+        int dy = to.Y - from.Y;
+        int sx = Math.Sign(dx), sy = Math.Sign(dy);
+        int ax = Math.Abs(dx), ay = Math.Abs(dy);
+
+        // Exact 45-degree diagonals: the segment passes through every
+        // intermediate cell's center, so walk them one by one.
+        if (ax == ay)
+        {
+            var diag = from;
+            while (diag != to)
+            {
+                diag = new Vector2I(diag.X + sx, diag.Y + sy);
+                if (diag == to)
+                    break;
+                if (Walkable[diag.Y, diag.X] != 1)
+                    return false; // wall on the diagonal
+                if (IsOccupiedBy(diag, -1))
+                    return false; // another character on the diagonal
+            }
+            return true;
+        }
+
+        // Other slopes (including steeper/shallower like (4,1)): integer
+        // Bresenham walks the cells whose centers the segment crosses.
+        int steps = Math.Max(ax, ay);
+        var cur = from;
+        int e2 = 2 * (ax >= ay ? ay : ax); // doubled error accumulator
+        int d2 = 2 * (ax >= ay ? ax : ay); // doubled dominant delta
+        for (int i = 0; i < steps; i++)
+        {
+            if (ax >= ay)
+            {
+                cur = new Vector2I(cur.X + sx, cur.Y);
+                if (e2 >= d2)
+                {
+                    cur = new Vector2I(cur.X, cur.Y + sy);
+                    e2 -= d2;
+                }
+            }
+            else
+            {
+                cur = new Vector2I(cur.X, cur.Y + sy);
+                if (e2 >= d2)
+                {
+                    cur = new Vector2I(cur.X + sx, cur.Y);
+                    e2 -= d2;
+                }
+            }
+            e2 += 2 * (ax >= ay ? ay : ax);
+            if (cur == to)
+                break; // target's own cell: endpoint, not an obstacle
+            if (Walkable[cur.Y, cur.X] != 1)
+                return false; // shot passes through a wall
+            if (IsOccupiedBy(cur, -1))
+                return false; // shot passes through another character
+        }
+        return true;
+    }
+
+    // Rebuild the shoot-target set for the active combatant from its CURRENT
+    // position: every cell inside the weapon's shooting circle
+    // (dx^2 + dy^2 <= range^2) with a clear line of sight (no obstacle or
+    // other token on the segment).
     private void ComputeShootTargets()
     {
         _shootTargets.Clear();
         if (_turns.Combatants[_turns.CurrentIndex].IsEnemy)
             return;
+        int range = _turns.Combatants[_turns.CurrentIndex].Equipment.Weapon.Range;
         var from = CurrentCell();
-        for (int x = 0; x < GridWidth; x++)
+        for (int dy = -range; dy <= range; dy++)
         {
-            for (int y = 0; y < GridHeight; y++)
+            for (int dx = -range; dx <= range; dx++)
             {
-                var cell = new Vector2I(x, y);
-                if (IsShootTarget(from, cell))
+                if (dx == 0 && dy == 0)
+                    continue;
+                if (dx * dx + dy * dy > range * range)
+                    continue;
+                var cell = new Vector2I(from.X + dx, from.Y + dy);
+                if (cell.X < 0 || cell.X >= GridWidth || cell.Y < 0 || cell.Y >= GridHeight)
+                    continue;
+                if (HasLineOfSight(from, cell, range))
                     _shootTargets.Add(cell);
             }
         }
@@ -675,62 +1199,104 @@ public partial class Level01 : Control
 
     private void RefreshHighlights()
     {
-        foreach (var rect in _highlights)
-            rect.QueueFree();
-        _highlights.Clear();
-
-        // Move mode: green highlights for reachable tiles. Shoot mode: red
-        // highlights on the 8 shoot-target tiles (only when the active
-        // combatant has not used its action yet).
-        if (_actionMode == ActionMode.Shoot && !_turns.Combatants[_turns.CurrentIndex].IsEnemy)
+        // The shooting-range circle: a soft ring centered on the active
+        // combatant, radius = weapon range in tiles. Shown in shoot mode for
+        // party turns so the player can see exactly who is in range (the red
+        // diamonds inside it are the cells that are actually shootable).
+        // Enemies don't need the visual — the AI knows its own range. It is
+        // a Polygon2D in the skewed Iso layer (a logical circle that the
+        // iso skew renders as an ellipse on the board plane).
+        if (_rangeCircle == null)
         {
-            foreach (var cell in _shootTargets)
+            _rangeCircle = new Polygon2D
             {
-                var highlight = new ColorRect
-                {
-                    Position = new Vector2(cell.X * TileSize, cell.Y * TileSize),
-                    Size = new Vector2(TileSize, TileSize),
-                    Color = new Color(0.95f, 0.35f, 0.3f, 0.25f),
-                    MouseFilter = MouseFilterEnum.Ignore,
-                };
-                _board.AddChild(highlight);
-                _highlights.Add(highlight);
-            }
+                Name = "RangeCircle",
+                Color = new Color(0.95f, 0.45f, 0.35f, 0.10f),
+                ZIndex = 1, // above the floor grid, under the tokens
+            };
+            _iso.AddChild(_rangeCircle);
         }
-        else
+        bool showCircle = _actionMode == ActionMode.Shoot
+            && _turnActive
+            && !_turns.Combatants[_turns.CurrentIndex].IsEnemy;
+        _rangeCircle.Visible = showCircle;
+        if (showCircle)
         {
-            foreach (var cell in _reachable.Keys)
+            int radius = _turns.Combatants[_turns.CurrentIndex].Equipment.Weapon.Range * TileSize;
+            // The overlay lives in the skewed Iso layer (logical space),
+            // centered on the cell's LOGICAL center. It is a 45-degree square
+            // (corners at distance r on the logical axes): the iso skew
+            // projects it onto the board as a diamond whose bounding box is a
+            // square of side 2r around the cell's board-space center — a
+            // readable "range" marker that stays square on screen.
+            var cell = CurrentCell();
+            float cx = (cell.X + 0.5f) * TileSize;
+            float cy = (cell.Y + 0.5f) * TileSize;
+            _rangeCircle.Position = new Vector2(cx, cy);
+            _rangeCircle.Polygon = new[]
             {
-                var highlight = new ColorRect
-                {
-                    Position = new Vector2(cell.X * TileSize, cell.Y * TileSize),
-                    Size = new Vector2(TileSize, TileSize),
-                    Color = new Color(0.3f, 0.9f, 0.6f, 0.18f),
-                    MouseFilter = MouseFilterEnum.Ignore,
-                };
-                _board.AddChild(highlight);
-                _highlights.Add(highlight);
-            }
+                new Vector2(radius, 0f),
+                new Vector2(0f, radius),
+                new Vector2(-radius, 0f),
+                new Vector2(0f, -radius),
+            };
+        }
+
+        // Move mode: green diamonds on reachable tiles. Shoot mode: red
+        // diamonds on every shootable tile (in range with line of sight,
+        // from the CURRENT position; only when the active combatant has not
+        // used its action yet). The grid layer draws them.
+        bool shootView = _actionMode == ActionMode.Shoot
+            && !_turns.Combatants[_turns.CurrentIndex].IsEnemy;
+        _grid.Reachable = shootView ? new HashSet<Vector2I>() : _reachable.Keys;
+        _grid.Shootable = shootView ? _shootTargets : new HashSet<Vector2I>();
+        RefreshGridLabels();
+        _grid.Rebuild();
+    }
+
+    // Rebuild the per-token HP text list the grid layer draws (live tokens
+    // only; dead ones are removed from the map).
+    private void RefreshGridLabels()
+    {
+        _grid.TokenLabels.Clear();
+        for (int i = 0; i < _tokens.Count; i++)
+        {
+            if (!_tokens[i].Visible)
+                continue;
+            var cell = TokenCell(i);
+            _grid.TokenLabels.Add((cell.X, cell.Y, $"{_turns.Combatants[i].HitPoints}"));
+        }
+    }
+
+    // The unskewed name labels (board-space Controls) follow their token's
+    // iso position.
+    private void UpdateTokenLabels()
+    {
+        for (int i = 0; i < _tokens.Count; i++)
+        {
+            if (_tokenLabels[i] == null)
+                continue;
+            var cell = TokenCell(i);
+            _tokenLabels[i].Position = IsoCellCenter(cell) + new Vector2(-24, -26);
         }
     }
 
     private void BuildBoard()
     {
-        for (int x = 0; x < GridWidth; x++)
-        {
-            for (int y = 0; y < GridHeight; y++)
-            {
-                bool walkable = Walkable[y, x] == 1;
-                var tile = new ColorRect
-                {
-                    Position = new Vector2(x * TileSize, y * TileSize),
-                    Size = new Vector2(TileSize, TileSize),
-                    Color = walkable ? new Color(0.1f, 0.12f, 0.16f) : new Color(0.04f, 0.045f, 0.06f),
-                    MouseFilter = MouseFilterEnum.Ignore,
-                };
-                _board.AddChild(tile);
-            }
-        }
+        // The skewed isometric layer: a Node2D under the board Control whose
+        // transform maps logical board pixels to the 2:1 iso projection.
+        // (A Control's own transform is always orthonormal, so the skew has
+        // to live on a Node2D; Node2D children compose the board's offset,
+        // which is how the camera works.)
+        var iso = new Node2D { Name = "Iso" };
+        iso.Set("transform", new Transform2D(new Vector2(0.5f, 0.25f), new Vector2(-0.5f, 0.25f), Vector2.Zero));
+        _iso = iso;
+        _board.AddChild(_iso);
+
+        // The floor grid + highlights + HP readouts, drawn in logical board
+        // pixels inside the skewed layer.
+        _grid = new IsoGrid { Name = "Grid", Cols = GridWidth, Rows = GridHeight, Tile = TileSize, Map = Walkable };
+        _iso.AddChild(_grid);
 
         for (int i = 0; i < Roster.Length; i++)
         {
@@ -738,54 +1304,36 @@ public partial class Level01 : Control
             var (sx, sy) = StartCells[i];
             // Party tokens are P0.., enemy tokens E0.. (test hooks key off this).
             var tokenName = Roster[i].IsEnemy ? $"E{i - 4}" : $"P{i}";
-            var token = new Control
+            var token = new TokenNode(tokenName, color, TileSize)
             {
-                Name = tokenName,
                 Position = new Vector2(sx * TileSize, sy * TileSize),
-                Size = new Vector2(TileSize, TileSize),
-                ZIndex = 1,
-                MouseFilter = MouseFilterEnum.Ignore,
             };
-            var body = new ColorRect
-            {
-                Position = new Vector2(8, 8),
-                Size = new Vector2(TileSize - 16, TileSize - 16),
-                Color = color,
-                MouseFilter = MouseFilterEnum.Ignore,
-            };
-            token.AddChild(body);
+            _iso.AddChild(token);
+            _tokens.Add(token);
+            // Unskewed name label (board-space Control) above the diamond.
             var label = new Label
             {
                 Text = name,
                 HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center,
-                Size = new Vector2(TileSize, TileSize),
-            };
-            token.AddChild(label);
-            // Small HP readout above the token.
-            var hpLabel = new Label
-            {
-                Text = $"{Roster[i].HitPoints}",
-                HorizontalAlignment = HorizontalAlignment.Center,
-                VerticalAlignment = VerticalAlignment.Center,
-                Position = new Vector2(0, -14),
-                Size = new Vector2(TileSize, 14),
+                Size = new Vector2(48, 12),
                 MouseFilter = MouseFilterEnum.Ignore,
+                ZIndex = 2,
             };
-            hpLabel.Modulate = new Color(0.9f, 0.95f, 1f);
-            hpLabel.AddThemeFontSizeOverride("font_size", 12);
-            token.AddChild(hpLabel);
-            _board.AddChild(token);
-            _tokens.Add(token);
-            _tokenBodies.Add(body);
-            _tokenHpLabels.Add(hpLabel);
+            label.Modulate = new Color(0.95f, 0.95f, 1f);
+            label.AddThemeFontSizeOverride("font_size", 12);
+            _board.AddChild(label);
+            _tokenLabels.Add(label);
         }
+        RefreshGridLabels();
+        _grid.Rebuild();
+        UpdateTokenLabels();
     }
 
+    // Refresh the grid layer's HP text after a combatant's HP changed.
     private void RefreshTokenHp(int index)
     {
-        if (index >= 0 && index < _tokenHpLabels.Count)
-            _tokenHpLabels[index].Text = $"{_turns.Combatants[index].HitPoints}";
+        RefreshGridLabels();
+        _grid.Rebuild();
     }
 
     // HP hit 0: remove the token from the map. It no longer blocks movement
@@ -837,18 +1385,39 @@ public partial class Level01 : Control
         _actionMenuName.Modulate = new Color(0.85f, 0.92f, 1f);
         _actionMenuName.AddThemeFontSizeOverride("font_size", 18);
         vbox.AddChild(_actionMenuName);
+        // Equipped gear readout (weapon · head · body), under the name.
+        _actionMenuEquip = new Label
+        {
+            Name = "Equipment",
+            Text = "…",
+            HorizontalAlignment = HorizontalAlignment.Center,
+        };
+        _actionMenuEquip.Modulate = new Color(0.65f, 0.75f, 0.9f);
+        _actionMenuEquip.AddThemeFontSizeOverride("font_size", 12);
+        vbox.AddChild(_actionMenuEquip);
         var actions = new HBoxContainer { Name = "Actions" };
         actions.AddThemeConstantOverride("separation", 8);
         _shootButton = new Button { Name = "Shoot", Text = "SHOOT", CustomMinimumSize = new Vector2(84, 34) };
         _moveButton = new Button { Name = "Move", Text = "MOVE", CustomMinimumSize = new Vector2(84, 34) };
         _waitButton = new Button { Name = "Wait", Text = "WAIT", CustomMinimumSize = new Vector2(84, 34) };
+        _healButton = new Button { Name = "Heal", CustomMinimumSize = new Vector2(96, 34) };
         _shootButton.Pressed += OnShootModePressed;
         _moveButton.Pressed += OnMoveModePressed;
         _waitButton.Pressed += OnWaitPressed;
+        _healButton.Pressed += OnHealPressed;
         actions.AddChild(_shootButton);
         actions.AddChild(_moveButton);
         actions.AddChild(_waitButton);
+        actions.AddChild(_healButton);
         vbox.AddChild(actions);
+        // Second row: END TURN, so the turn can be closed without reaching for
+        // the top-right debug panel.
+        var turnRow = new HBoxContainer { Name = "TurnRow" };
+        turnRow.AddThemeConstantOverride("separation", 8);
+        _endTurnMenuButton = new Button { Name = "EndTurn", Text = "END TURN", CustomMinimumSize = new Vector2(160, 34) };
+        _endTurnMenuButton.Pressed += OnEndTurnPressed;
+        turnRow.AddChild(_endTurnMenuButton);
+        vbox.AddChild(turnRow);
         _actionMenu.AddChild(vbox);
         AddChild(_actionMenu);
     }
@@ -857,10 +1426,18 @@ public partial class Level01 : Control
     {
         if (_actionMenuName == null)
             return;
-        _actionMenuName.Text = _turns.Current.Name;
-        _shootButton.Disabled = _actionUsed || _turns.Current.IsEnemy;
-        _moveButton.Disabled = _actionUsed || _turns.Current.IsEnemy;
-        _waitButton.Disabled = _actionUsed || _turns.Current.IsEnemy;
+        var current = _turns.Current;
+        _actionMenuName.Text = current.Name;
+        _actionMenuEquip.Text = current.Equipment.ToText();
+        int stims = current.GetItemCount(Item.BioStim);
+        _healButton.Text = $"BIOSTIM x{stims}";
+        // One action (shoot/wait/item) and one move per turn; each budget
+        // disables its own buttons independently.
+        bool enemyTurn = current.IsEnemy;
+        _shootButton.Disabled = enemyTurn || _actionUsed;
+        _moveButton.Disabled = enemyTurn || _movedThisTurn;
+        _waitButton.Disabled = enemyTurn || _actionUsed;
+        _healButton.Disabled = enemyTurn || _actionUsed || stims <= 0 || current.HitPoints >= current.MaxHitPoints;
         _shootButton.Modulate = _actionMode == ActionMode.Shoot ? Colors.White : new Color(1, 1, 1, 0.55f);
         _moveButton.Modulate = _actionMode == ActionMode.Move ? Colors.White : new Color(1, 1, 1, 0.55f);
     }

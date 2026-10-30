@@ -71,15 +71,21 @@ func _run_flow() -> void:
 		_finish()
 		return
 	await process_frame  # ensure Level01._Ready (turn-system init) completed
+	# Weapons are rolled randomly at encounter start; pin everyone to the
+	# pistol (range 4) so the enemy AI (shoot-or-approach) is deterministic.
+	for n in ["Vex", "Kaito", "Rook", "Mira", "Gutter", "Slick", "Brute", "Wisp"]:
+		level.SetWeapon(n, false)
+	await process_frame
 
 	# Level hosts exactly 8 tokens: 4 party (P*) + 4 enemies (E*).
+	# Tokens are Node2Ds under the skewed "Iso" layer (Board/Iso/*).
 	var party := 0
 	var enemies := 0
-	for c in level.get_node("Board").get_children():
+	for c in level.get_node("Board/Iso").get_children():
 		var n := String(c.name)
-		if c is Control and n.begins_with("P"):
+		if c is Node2D and n.begins_with("P"):
 			party += 1
-		elif c is Control and n.begins_with("E"):
+		elif c is Node2D and n.begins_with("E"):
 			enemies += 1
 	_check(party == 4, "level has 4 party tokens (got %d)" % party)
 	_check(enemies == 4, "level has 4 enemy tokens (got %d)" % enemies)
@@ -165,20 +171,27 @@ func _run_flow() -> void:
 	_check(level.IsReachable(1, 1), "Vex's own cell is reachable")
 	# One step left is reachable.
 	_check(level.IsReachable(0, 1), "Vex reaches (0,1) one step left")
-	# Down the open left column to (0,11) is exactly 11 steps -> boundary hit.
-	_check(level.IsReachable(0, 11), "Vex reaches (0,11) at the 11-step boundary")
-	# (1,11) needs a 12-step detour around Rook -> just out of range.
-	_check(not level.IsReachable(1, 11), "Vex cannot reach (1,11) (12-step detour)")
-	# Obstacles are never reachable.
-	_check(not level.IsReachable(5, 1), "obstacle (5,1) not reachable")
+	# Down the open left column (clear to the bottom edge, row 15) (0,15) is
+	# exactly 14 steps -> out of range.
+	_check(not level.IsReachable(0, 15), "Vex cannot reach (0,15) (14 steps, range 11)")
+	_check(level.IsReachable(0, 11), "Vex reaches (0,11) (11 steps down the open lane)")
+	# (1,15) needs a 14-step detour around Rook -> out of range.
+	_check(not level.IsReachable(1, 15), "Vex cannot reach (1,15) (14-step detour)")
+	# Obstacles are never reachable (6,3 is a wall on the 28x16 map).
+	_check(not level.IsReachable(6, 3), "obstacle (6,3) not reachable")
 
 	# --- Camera panning: WASD pans the viewport over the board. ---
 	# Levels can be far larger than the window (up to 2000x2000 grids), so the
 	# camera clamps to the board's edges. Test the pan + clamp on a large board.
-	var p0 := level.get_node("Board/P0")
+	# Tokens live at LOGICAL cell coordinates under Board/Iso (the iso skew
+	# node does the projection), so token.position stays x*TILE, y*TILE.
+	var p0 := level.get_node("Board/Iso/P0")
 	var board := level.get_node("Board")
 	var viewport: Vector2 = level.size
 	level.SetBoardPixelSize(10000, 10000)
+	# Snap the camera to the board origin (headless: already there; rendered:
+	# the camera starts centered, so pan far past the top-left edge).
+	level.PanCameraBy(Vector2(-1e6, -1e6))
 	await process_frame
 	_check(level.GetCameraPos() == Vector2(0, 0), "camera starts at the board origin")
 	_check(board.position == Vector2(0, 0), "board offset is zero at the origin")
@@ -203,15 +216,17 @@ func _run_flow() -> void:
 			"WASD no longer moves the token")
 	level.SetPanKey(KEY_NONE)
 	await process_frame
-	level.SetBoardPixelSize(20 * TILE, 12 * TILE)
+	level.SetBoardPixelSize(28 * TILE, 16 * TILE)
 	await process_frame
 
 	# --- Click-to-move: mouse-only. Click a reachable tile, Vex jumps there. ---
 	# Vex is at (1,1). Click (0,6): 6 tiles via left column, reachable.
+	# Board clicks arrive in ISO board space, so tests emit them at the cell's
+	# iso center (IsoCellCenter) — the level inverse-projects them exactly.
 	var click := InputEventMouseButton.new()
 	click.button_index = MOUSE_BUTTON_LEFT
 	click.pressed = true
-	click.position = Vector2(0 * TILE + TILE / 2, 6 * TILE + TILE / 2)
+	click.position = level.IsoCellCenter(Vector2i(0, 6))
 	board.gui_input.emit(click)
 	await process_frame
 	_check(p0.position == Vector2(0, 6 * TILE), "click moved Vex to (0,6)")
@@ -221,10 +236,23 @@ func _run_flow() -> void:
 	var click_again := InputEventMouseButton.new()
 	click_again.button_index = MOUSE_BUTTON_LEFT
 	click_again.pressed = true
-	click_again.position = Vector2(0 * TILE + TILE / 2, 5 * TILE + TILE / 2)
+	click_again.position = level.IsoCellCenter(Vector2i(0, 5))
 	board.gui_input.emit(click_again)
 	await process_frame
 	_check(p0.position == Vector2(0, 6 * TILE), "second click ignored (once per turn)")
+
+	# --- Click BEHIND a character: the straight route is blocked by Rook at
+	# (1,2), but (1,3) is reachable with a 4-step detour (via the x=0 lane),
+	# so the click must land there, not be swallowed by the obstacle.
+	level.UndoMove()
+	await process_frame
+	var click_behind := InputEventMouseButton.new()
+	click_behind.button_index = MOUSE_BUTTON_LEFT
+	click_behind.pressed = true
+	click_behind.position = level.IsoCellCenter(Vector2i(1, 3))
+	board.gui_input.emit(click_behind)
+	await process_frame
+	_check(p0.position == Vector2(1 * TILE, 3 * TILE), "click behind Rook moved Vex to (1,3) via detour")
 
 	# --- UNDO restores the turn-start cell and re-arms the move. ---
 	level.UndoMove()
@@ -235,25 +263,45 @@ func _run_flow() -> void:
 	var click2 := InputEventMouseButton.new()
 	click2.button_index = MOUSE_BUTTON_LEFT
 	click2.pressed = true
-	click2.position = Vector2(0 * TILE + TILE / 2, 6 * TILE + TILE / 2)
+	click2.position = level.IsoCellCenter(Vector2i(0, 6))
 	board.gui_input.emit(click2)
 	await process_frame
 	_check(p0.position == Vector2(0, 6 * TILE), "Vex moved to (0,6) after undo")
 
-	# --- Enemy auto-move: on an enemy's turn it steps one random tile,
-	# then its turn ends automatically (no player input needed). ---
+	# --- Enemy AI: on an enemy's turn it moves toward the nearest party
+	# member, stopping as soon as it is INSIDE its weapon's shooting circle
+	# (it moves into shooting range instead of right up to the player), then
+	# its turn ends automatically (no player input needed). Brute at (26,1)
+	# with pistol range 4 and movement 13: nearest player is Vex at (1,1);
+	# row y=1 is clear from x=1 to x=26. Its 13-tile walk only gets it to
+	# (13,1) — 12 from Vex, still outside the range-4 circle (reaching it
+	# would take 21 steps) — so it walks its full range, no shot yet.
+	# Deterministic under the pinned pistols. ---
+	# Reset to a known layout: party clustered left, enemies spread on the
+	# right so Brute's westward lane along row y=1 is unobstructed.
+	level.SetTokenCell("Vex", 1, 1)
+	level.SetTokenCell("Kaito", 2, 1)
+	level.SetTokenCell("Rook", 1, 2)
+	level.SetTokenCell("Mira", 2, 2)
+	level.SetTokenCell("Brute", 26, 1)
+	level.SetTokenCell("Slick", 26, 3)
+	level.SetTokenCell("Gutter", 25, 3)
+	level.SetTokenCell("Wisp", 25, 4)
 	level.ForceCurrent("Brute")
 	await process_frame
 	var brute_before: Vector2i = level.GetTokenCell("Brute")
-	# Wait for the enemy auto-move (armed for 12 frames) to fire.
+	_check(brute_before == Vector2i(26, 1), "Brute starts at (26,1) (got %s)" % str(brute_before))
+	# Wait for the enemy AI (armed for 12 frames) to fire.
 	for i in 20:
 		await process_frame
 	var brute_after: Vector2i = level.GetTokenCell("Brute")
 	var moved := Vector2i(brute_after.x - brute_before.x, brute_after.y - brute_before.y)
-	_check(abs(moved.x) + abs(moved.y) == 1,
-			"enemy Brute auto-moved one tile (delta %s)" % str(moved))
+	_check(abs(moved.x) + abs(moved.y) == 13,
+			"enemy Brute moved its full 13-tile range toward the players (delta %s)" % str(moved))
+	_check(brute_after == Vector2i(13, 1),
+			"enemy Brute moved toward the players (got %s, want (13,1))" % str(brute_after))
 	_check(level.GetCurrentName() != "Brute",
-			"enemy turn auto-ended after moving (now '%s')" % level.GetCurrentName())
+			"enemy turn auto-ended after acting (now '%s')" % level.GetCurrentName())
 
 	# BACK returns to the menu.
 	level.get_node("Center/Panel/Actions/Back").pressed.emit()
