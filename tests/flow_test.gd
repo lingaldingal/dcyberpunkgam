@@ -297,6 +297,39 @@ func _run_flow() -> void:
 	level.SetBoardPixelSize(28 * TILE, 16 * TILE)
 	await process_frame
 
+	# --- Small board (smaller than the window): the diamond must be CENTERED,
+	# not pinned to the right/bottom edges, and WASD panning must move it and
+	# STAY moved (the old clamp snapped the camera back to one pinned point, so
+	# panning looked dead and the map sat off-center — worse at higher res).
+	# Headless size is 64x64, so set it to a real resolution to exercise this. ---
+	level.ResetBoardBounds()
+	var real_vp := Vector2(1280, 720)
+	level.size = real_vp
+	level.ResetCamera()
+	await process_frame
+	var cam_now: Vector2 = level.GetCameraPos()
+	var d_center: Vector2 = level.IsoBoard(Vector2(14 * TILE, 8 * TILE))
+	var onscreen: Vector2 = d_center - cam_now
+	_check((onscreen - real_vp / 2.0).length() < 2.0,
+			"diamond is centered in the window (onscreen %s vs window %s)" % [onscreen, real_vp / 2.0])
+	# WASD pans and the camera stays put (does not snap back). Headless
+	# per-frame delta can be tiny, so accumulate over several frames.
+	var pre_pan: Vector2 = level.GetCameraPos()
+	level.SetPanKey(KEY_D)
+	for i in 12:
+		await process_frame
+	var post_pan: Vector2 = level.GetCameraPos()
+	level.SetPanKey(KEY_NONE)
+	await process_frame
+	_check((post_pan - pre_pan).x > 1.0,
+			"holding D pans the small board right and it stays (delta %s)" % (post_pan - pre_pan))
+	level.ResetCamera()
+	await process_frame
+	# Restore the headless viewport size (the click-to-move tests below emit
+	# board-local clicks, which don't depend on this, but keep it clean).
+	level.size = Vector2(64, 64)
+	await process_frame
+
 	# --- Click-to-move: mouse-only. Click a reachable tile, Vex jumps there. ---
 	# Vex is at (1,1). Click (0,6): 6 tiles via left column, reachable.
 	# Board clicks arrive in ISO board space, so tests emit them at the cell's

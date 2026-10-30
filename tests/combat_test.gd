@@ -442,6 +442,13 @@ func _run() -> void:
 	_check(level.GetHitPoints("Wisp") <= 0, "Wisp HP reached 0 (got %d)" % level.GetHitPoints("Wisp"))
 	_check(not level.IsAlive("Wisp"), "Wisp is dead")
 	_check(token_wisp.visible == false, "dead Wisp's token is removed from the map")
+	var label_wisp: Control = null
+	for child in board.get_children():
+		if child is Label and (child as Label).text == "Wisp":
+			label_wisp = child
+			break
+	_check(label_wisp != null and label_wisp.visible == false,
+		"dead Wisp's name label is removed from the map")
 	# The turn order (rolls all 1) is Brute, Rook, Slick, Vex, Gutter, Kaito,
 	# Mira, Wisp. Mira is second-to-last, so ending its turn must land on the
 	# dead Wisp slot and skip straight to Brute (round wraps).

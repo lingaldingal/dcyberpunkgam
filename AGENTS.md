@@ -139,19 +139,32 @@ SCENE TEST button:
   the origin. The camera clamps to THIS box (not a [0,size] box).
 - **Camera panning (WASD).** Levels can be far larger than the window
   (up to 2000×2000 grids), so the board is offset by `-camera` and **WASD /
-  arrow keys pan the viewport** one tile per frame (`UpdateCamera` in
-  `_Process`, `CameraPanSpeed` = one tile/frame). `_cameraPos` is the board
-  pixel at the viewport's top-left; `ApplyCamera()` clamps it to
-  `[bounds.Min, bounds.Max - view]` per axis (a board smaller than the window
-  gets centered, not pinned — the min clamp uses the diamond's NEGATIVE left
-  edge so its left third isn't pinned off-screen). The camera **starts
-  centered** on the iso diamond (diamond center = board point
+  arrow keys pan the viewport** at `CameraPanSpeed` = **480 px/s** (frame-rate
+  independent; per-frame step is `CameraPanSpeed * delta` in `UpdateCamera`
+  `_Process`). `_cameraPos` is the board pixel at the viewport's top-left;
+  `ApplyCamera()` clamps it per axis to the interval between the board's
+  left/top edge at the screen edge (`bounds.Min`) and its right/bottom edge
+  at the screen edge (`bounds.Max - view`) — i.e. `clamp(cam, min(lo,hi),
+  max(lo,hi))`. For a board LARGER than the view the range is a normal edge
+  clamp; for a board SMALLER than the view the range is `[bounds.Min,
+  bounds.Max - view]` (lo>hi), so the board slides freely while staying
+  fully on-screen and the MIDPOINT is centered. This is why a small map is
+  **centered in the window at every resolution** (not pinned to the
+  right/bottom edges as the old single-point clamp did) and why **WASD
+  panning sticks** (the old clamp collapsed to one pinned point, snapping the
+  camera back every frame). The diamond's NEGATIVE left edge (`-H*T/2`) is
+  part of `bounds.Min` so its left third isn't pinned off-screen. The camera
+  **starts centered** on the iso diamond (diamond center = board point
   `((W-H)*T/4, (W+H)*T/8)` minus the viewport half-size; done once in the
-  first `_Process` where `Size` is valid; in headless test
-  mode `Size` is (0,0) so it stays at the origin — flow_test's pan assertions
-  rely on that). `Board.Position = -camera`; the board's children keep
-  board-local coords; only the board node moves. The info panel is
-  constrained (800px + autowrap) so long text never overflows.
+  first `_Process` where `Size` is valid; in headless test mode `Size` is
+  (0,0) so it stays at the origin — flow_test's pan assertions rely on that).
+  `Board.Position = -camera`; the board's children keep board-local coords;
+  only the board node moves. Test hooks: `ResetBoardBounds()` (restore the
+  real iso diamond bounds after `SetBoardPixelSize`) and `ResetCamera()`
+  (re-center). flow_test's camera section covers both the large-board edge
+  clamp AND the small-board centering + WASD-sticks case (the latter is what
+  used to be broken). The info panel is constrained (800px + autowrap) so
+  long text never overflows.
 - **Enemies act** (move first, then shoot, see the Combat section's "Enemy
   AI") after a short delay (12 frames) in `_Process`, then **automatically
   end their turn**. Guarded by `_enemyActed` so the turn ends exactly once.

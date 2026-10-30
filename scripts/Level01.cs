@@ -44,16 +44,21 @@ namespace Dcyberpunkgam;
 ///
 /// Camera: the board is a plain Control that can be far larger than the window
 /// (levels are up to 2000x2000 grids). <see cref="_cameraPos"/> is the top-left
-/// pixel of the viewport, clamped to the board; WASD pans it by one tile per
-/// frame while held.
+/// pixel of the viewport, clamped so the board stays fully on screen (a board
+/// smaller than the viewport is centered, not pinned to an edge); WASD /
+/// arrow keys pan it at <see cref="CameraPanSpeed"/> px/s while held, so the
+/// player can move the map around on screen.
 /// </summary>
 public partial class Level01 : Control
 {
     private const int GridWidth = 28;
     private const int GridHeight = 16;
     private const int TileSize = 48;
-    // One board tile per frame of WASD panning.
-    private const int CameraPanSpeed = TileSize;
+    // WASD pan speed in pixels per SECOND (frame-rate independent; the actual
+    // per-frame step is CameraPanSpeed * delta in UpdateCamera). 480 px/s is
+    // fast enough to feel responsive on a small map yet controllable — the map
+    // is up to 2000x2000 grids, so a much higher rate is needed to traverse it.
+    private const float CameraPanSpeed = 480f;
 
     // --- Isometric projection --------------------------------------------
     // The board is drawn as a 2:1 isometric grid: a logical board pixel
@@ -366,13 +371,26 @@ public partial class Level01 : Control
     // left third of the diamond is pinned off-screen.
     private Rect2 _isoBounds;
 
-    // Clamp the camera to the ISO board's bounding box and apply it. The board
+    // Clamp the camera so the board stays on screen and apply it. The board
     // is a plain Control, so it is shown by offsetting it by -camera (the
     // board's own children keep their board-local coordinates; only the board
-    // moves). The camera is the board pixel at the viewport's top-left; it is
-    // clamped to [bounds.Min, bounds.Max - view] per axis, so a board smaller
-    // than the viewport in a dimension is centered (negative board offset),
-    // and a larger one clamps at the edges.
+    // moves). The camera is the board pixel at the viewport's top-left.
+    //
+    // For each axis the two legal extremes are:
+    //   camMax = bounds.Min       (board's left/top edge at the screen edge)
+    //   camMin = bounds.Max - view (board's right/bottom edge at the screen edge)
+    // When the board is LARGER than the viewport (camMin <= camMax) the valid
+    // range is [camMin, camMax] and the board clamps at its edges. When the
+    // board is SMALLER (camMin > camMax) the range is [camMax, camMin]: the
+    // board may slide anywhere while staying fully on-screen, and the MIDPOINT
+    // ((bounds.Center) - view/2) is exactly where CenterCamera puts it — i.e.
+    // the diamond is centered in the window at every resolution.
+    //
+    // This interval (not a single point) is what makes WASD panning visible on
+    // a small board: the old clamp collapsed to one bottom-right-pinned point
+    // when the board was smaller than the viewport, so the camera snapped back
+    // every frame (no panning) and the diamond sat flush against the right and
+    // bottom edges instead of centered.
     private void ApplyCamera()
     {
         if (_board == null)
@@ -381,26 +399,47 @@ public partial class Level01 : Control
         float viewW = Size.X > 0 ? Size.X : 1;
         float viewH = Size.Y > 0 ? Size.Y : 1;
 
-        float minX = Mathf.Min(_isoBounds.Position.X, _isoBounds.End.X - viewW);
-        float minY = Mathf.Min(_isoBounds.Position.Y, _isoBounds.End.Y - viewH);
+        float loX = _isoBounds.End.X - viewW;   // board's right edge at screen right
+        float hiX = _isoBounds.Position.X;      // board's left edge at screen left
+        float loY = _isoBounds.End.Y - viewH;   // board's bottom edge at screen bottom
+        float hiY = _isoBounds.Position.Y;      // board's top edge at screen top
+
         _cameraPos = new Vector2(
-            Mathf.Clamp(_cameraPos.X, minX, _isoBounds.End.X - viewW),
-            Mathf.Clamp(_cameraPos.Y, minY, _isoBounds.End.Y - viewH));
+            Mathf.Clamp(_cameraPos.X, Mathf.Min(loX, hiX), Mathf.Max(loX, hiX)),
+            Mathf.Clamp(_cameraPos.Y, Mathf.Min(loY, hiY), Mathf.Max(loY, hiY)));
 
         _board.Position = -_cameraPos;
     }
 
-    private void InitializeCamera()
+    // The ISO diamond's true on-screen bounding box in board space:
+    //   x: [-H*T/2, (W-H)*T/2 + H*T] = [-H*T/2, W*T/2]
+    //   y: [0, (W+H)*T/4]
+    // (see the _isoBounds comment for why the left edge is negative).
+    private static Rect2 IsoBounds()
     {
-        // The board's on-screen (ISO) bounding box (see _isoBounds comment).
-        _isoBounds = new Rect2(
+        return new Rect2(
             -GridHeight * TileSize / 2f, 0f,
             (GridWidth + GridHeight) * TileSize / 2f,
             (GridWidth + GridHeight) * TileSize / 4f);
+    }
+
+    private void InitializeCamera()
+    {
+        _isoBounds = IsoBounds();
         // The viewport Size is not laid out until after _Ready, so the actual
         // centering is deferred to the first _Process frame (see _Process).
         // (Clicks are handled at the level root — see OnLevelGuiInput — so
         // the Board's own rect no longer matters for the hit-test.)
+        ApplyCamera();
+    }
+
+    /// <summary>
+    /// Test hook: restore the real ISO diamond bounding box (undo any
+    /// <see cref="SetBoardPixelSize"/> override) and re-apply the camera.
+    /// </summary>
+    public void ResetBoardBounds()
+    {
+        _isoBounds = IsoBounds();
         ApplyCamera();
     }
 
@@ -1518,6 +1557,7 @@ public partial class Level01 : Control
     private void KillToken(int index)
     {
         _tokens[index].Visible = false;
+        _tokenLabels[index].Visible = false;
         RefreshTokenHp(index);
     }
 
