@@ -345,12 +345,26 @@ never mix `anchors_preset` with explicit `anchor_*` values that disagree.
 - In `-s res://script.gd` mode the main scene is NOT auto-loaded; instantiate
   it manually in the test. `:=` inference fails on variables initialized `null`.
 - C# `partial class` is REQUIRED for Godot C# scripts (e.g. `public partial class Level01 : Control`).
-- Board click handling: the `Board` Control uses `MouseFilter.Stop` + the
-  `GuiInput` signal (coords are board-local). Every decorative node on top of
-  the board (UI panel, labels, tiles, tokens, highlights) must be
-  `MouseFilter.Ignore` or it swallows the click. The root Window (a Control in
-  Godot 4) also consumes in-window clicks, so `_UnhandledInput` is NOT a
-  reliable click path; use `GuiInput` on the board.
+- Board click handling: real clicks are caught by the **LEVEL ROOT** (a
+  full-rect `Control` with `MouseFilter.Stop`), NOT the `Board` Control.
+  `OnLevelGuiInput` maps a window-local mouse point to board-local via
+  `me.Position - _board.GetGlobalPosition()` (and skips the point if it's on
+  the action menu) before calling `OnBoardGuiInput` (coords are board-local).
+  This exists because a `Control` only receives `gui_input` inside its OWN
+  local rect, and the `Board`'s rect starts at local (0,0) — but the iso
+  diamond's left vertex sits at board-local x = -H*T/2, so every tile in the
+  down-left region projects to local x < 0 and the Board's hit-test dropped
+  those clicks (the "Rook can't click the green cells at the bottom-left"
+  bug). `_board.MouseFilter` is `Ignore` (never a click-catcher); the Board's
+  own `GuiInput` is ALSO still subscribed (`_board.GuiInput += OnBoardGuiInput`)
+  so tests can emit board-local clicks directly at `board.gui_input.emit(...)`.
+  `Background` is `MouseFilter.Ignore`; decorative nodes stay `Ignore`.
+  `tests/_rook_repro.gd` is the headless regression test (forces Rook, then
+  real-clicks EVERY reachable cell through `level.gui_input.emit` and asserts
+  the token lands on each). NOTE: `_rook_repro.gd` uses `root.size=1280x720`
+  and routes via `level.gui_input.emit` (window-local) — do NOT route via
+  `Input.parse_input_event` there, because the headless window is 64x64 and
+  cell centers fall outside it.
 - `Walkable` is row-major `int[,]` indexed `[y, x]` (y = row, x = column).
 - **Headless `RichTextLabel` doesn't parse BBCode**: in `--headless` / `-s`
   test mode there's no render pass, so `GetParsedText()` returns the RAW BBCode

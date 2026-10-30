@@ -200,16 +200,33 @@ public partial class Level01 : Control
 
     public override void _Ready()
     {
-        // The board handles its own clicks (GuiInput). The UI panel on top
-        // of it is click-transparent except for the buttons, so board
-        // clicks reach the board while the buttons keep their handling.
-        MouseFilter = MouseFilterEnum.Ignore;
+        // Board clicks are routed through the LEVEL ROOT, not the Board
+        // Control. A Control only receives gui_input for points inside its
+        // own local rect, and the Board's rect starts at local (0,0) — but
+        // the iso diamond's left vertex sits at board-local x = -H*T/2, so
+        // every tile in the down-left region of the board projects to local
+        // x < 0 and the Board's hit-test dropped those clicks (Rook could
+        // path through a green cell via BFS yet never click it). The level
+        // root is full-rect; making it Stop makes it the topmost click-catcher
+        // for every in-window point, so its gui_input receives the click and
+        // OnLevelGuiInput maps the point back to board-local coordinates via
+        // the board's global position. Sibling controls (Background) are
+        // click-transparent so the click reaches the root's gui_input.
+        MouseFilter = MouseFilterEnum.Stop;
+        GetNode<Control>("Background").MouseFilter = MouseFilterEnum.Ignore;
         _board = GetNode<Control>("Board");
-        _board.MouseFilter = MouseFilterEnum.Stop;
+        _board.MouseFilter = MouseFilterEnum.Ignore;
+        // The level root catches real clicks (its full-rect hit area covers the
+        // diamond's negative-local region the Board's rect misses) and maps
+        // them to board-local before calling OnBoardGuiInput. The Board's own
+        // gui_input stays subscribed too: tests emit board-local clicks there
+        // directly, and in the real game the Board (MouseFilter.Ignore) never
+        // receives a click, so there is no double-handling.
+        GuiInput += OnLevelGuiInput;
         _board.GuiInput += OnBoardGuiInput;
-        // The board loses hover tracking once the pointer leaves it.
-        // (Mouse motion itself arrives as GuiInput — see OnBoardGuiInput.)
-        _board.MouseExited += OnBoardMouseExited;
+        // Hover tracking is cleared once the pointer leaves the window.
+        // (Mouse motion itself arrives as GuiInput — see OnLevelGuiInput.)
+        MouseExited += OnBoardMouseExited;
         foreach (var name in new[]
         {
             "Center", "Center/Panel",
@@ -382,6 +399,8 @@ public partial class Level01 : Control
             (GridWidth + GridHeight) * TileSize / 4f);
         // The viewport Size is not laid out until after _Ready, so the actual
         // centering is deferred to the first _Process frame (see _Process).
+        // (Clicks are handled at the level root — see OnLevelGuiInput — so
+        // the Board's own rect no longer matters for the hit-test.)
         ApplyCamera();
     }
 
@@ -450,6 +469,25 @@ public partial class Level01 : Control
         // which have a negative left edge — see InitializeCamera.)
         _isoBounds = new Rect2(0f, 0f, w, h);
         ApplyCamera();
+    }
+
+    // Root-level click entry point: the Board Control's own rect does not
+    // cover the iso diamond's negative-local region, so clicks are caught
+    // here (full-rect root, mouse_filter Stop) and converted to board-local
+    // coordinates before being handed to OnBoardGuiInput. Direct
+    // board.gui_input emissions from tests already arrive board-local and
+    // bypass this transform.
+    private void OnLevelGuiInput(InputEvent @event)
+    {
+        if (!(@event is InputEventMouse me) || _board == null)
+            return;
+        var local = me.Position - _board.GetGlobalPosition();
+        // A click landing on the action menu is for its buttons, not the board
+        // (the menu overlaps the diamond's bottom-left corner).
+        if (_actionMenu != null && _actionMenu.GetRect().HasPoint(me.Position))
+            return;
+        me.Position = local;
+        OnBoardGuiInput(me);
     }
 
     private void OnBoardGuiInput(InputEvent @event)
@@ -1492,7 +1530,13 @@ public partial class Level01 : Control
         _actionMenu = new PanelContainer
         {
             Name = "ActionMenu",
-            MouseFilter = MouseFilterEnum.Stop,
+            // PASS: the menu overlaps the diamond's bottom-left corner. Its
+            // BUTTONS (MouseFilter.Stop) still catch their own clicks; the
+            // panel's other area is click-transparent so a click there bubbles
+            // to the level root, where OnLevelGuiInput's menu-overlap guard
+            // keeps it from also moving a token. (Clicks are caught at the
+            // level root, not the Board — see OnLevelGuiInput.)
+            MouseFilter = MouseFilterEnum.Pass,
             ZIndex = 10,
         };
         var panelStyle = new StyleBoxFlat
