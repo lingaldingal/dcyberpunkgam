@@ -13,7 +13,7 @@ namespace Dcyberpunkgam;
 /// </summary>
 public partial class SceneTest : Control
 {
-    private const float RevealCps = 45f;   // characters per second
+    private const float RevealCps = 60f;   // characters per second (sweet spot: 35-60)
 
     private struct Line
     {
@@ -41,6 +41,7 @@ public partial class SceneTest : Control
     private ColorRect _leftGlow = null!;
     private ColorRect _rightGlow = null!;
     private RichTextLabel _text = null!;
+    private PanelContainer _dialogBox = null!;
     private Button _backButton = null!;
     private Label _hint = null!;
 
@@ -54,7 +55,15 @@ public partial class SceneTest : Control
         _text = GetNode<RichTextLabel>("DialogueBox/Text");
         _backButton = GetNode<Button>("Back");
         _hint = GetNode<Label>("DialogueBox/Hint");
+        _dialogBox = GetNode<PanelContainer>("DialogueBox");
+        _text.BbcodeEnabled = true;
+        // Let clicks anywhere (including on the background, dialogue box and
+        // text) reach this node's _GuiInput instead of being swallowed.
+        GetNode<ColorRect>("Background").MouseFilter = MouseFilterEnum.Ignore;
+        _dialogBox.MouseFilter = MouseFilterEnum.Ignore;
+        _text.MouseFilter = MouseFilterEnum.Ignore;
         _backButton.Pressed += OnBackPressed;
+        _backButton.ReleaseFocus();
         ShowLine();
     }
 
@@ -66,8 +75,7 @@ public partial class SceneTest : Control
             if (_charsShown < line.Text.Length)
             {
                 _charsShown = (int)Mathf.Min(line.Text.Length, _charsShown + (float)delta * RevealCps);
-                _text.Text = SpeakerBbCode(line) + line.Text[.._charsShown];
-                _text.ScrollToLine(_text.GetLineCount() - 1);
+                UpdateText();
             }
 
             // Active speaker: glow pulses, portrait full; inactive dims out.
@@ -91,22 +99,15 @@ public partial class SceneTest : Control
     }
 
     /// <summary>
-    /// Advance the conversation: a click/key first finishes revealing the
-    /// current line, then moves to the next line. Answering the last line
-    /// ends the scene and returns to the main menu.
+    /// Advance the conversation: a click/key instantly finishes the
+    /// typewriter reveal and moves to the next line (or ends the scene
+    /// after the last line).
     /// </summary>
     public void Advance()
     {
         if (_ended)
             return;
-        var line = Dialogue[_lineIndex];
-        if (_charsShown < line.Text.Length)
-        {
-            _charsShown = line.Text.Length;
-            _text.Text = SpeakerBbCode(line) + line.Text;
-            _text.ScrollToLine(_text.GetLineCount() - 1);
-        }
-        else if (_lineIndex < Dialogue.Length - 1)
+        if (_lineIndex < Dialogue.Length - 1)
         {
             _lineIndex++;
             ShowLine();
@@ -137,8 +138,18 @@ public partial class SceneTest : Control
     {
         var line = Dialogue[_lineIndex];
         _charsShown = 0;
-        _text.Text = SpeakerBbCode(line);
+        // The speaker name is shown in full immediately; only the line
+        // body types itself out.
+        UpdateText();
         _text.ScrollToLine(0);
+    }
+
+    private void UpdateText()
+    {
+        var line = Dialogue[_lineIndex];
+        int shown = Math.Min(_charsShown, line.Text.Length);
+        _text.Text = SpeakerBbCode(line) + line.Text[..shown];
+        _text.ScrollToLine(_text.GetLineCount() - 1);
     }
 
     private string SpeakerBbCode(Line line)
