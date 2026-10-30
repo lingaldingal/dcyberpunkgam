@@ -180,13 +180,91 @@ func _run_flow() -> void:
 	# Obstacles are never reachable (6,3 is a wall on the 28x16 map).
 	_check(not level.IsReachable(6, 3), "obstacle (6,3) not reachable")
 
+	# --- Move-mode path preview: hovering a reachable tile in MOVE mode shows
+	# the BFS route (line + destination circle); hovering in SHOOT mode, on an
+	# enemy turn, after the move, on a wall, or off the board shows nothing.
+	# Vex is at (1,1); Rook at (1,2) blocks the straight-down route, so the
+	# route to (0,6) detours left to the x=0 lane. ---
+	var p0 := level.get_node("Board/Iso/P0")
+	var board := level.get_node("Board")
+	_check(level.GetActionMode() == 0, "Vex's turn starts in MOVE mode")
+	level.SetHoverCell(0, 6)
+	var pv: Array = level.GetPathPreview()
+	_check(pv[0] == 1.0 and pv[1] == 1.0, "hovering (0,6) in move mode shows the path")
+	_check(pv[2] == 0.0 and pv[3] == 6.0, "path end circle sits on the destination (0,6)")
+	# The route detours through the open left column (Rook blocks x=1).
+	var pts: Array = level.GetHoverPathPoints()
+	_check(pts.size() >= 7, "path line has at least 7 points (got %d)" % pts.size())
+	_check(pts[0] == Vector2(1 * TILE + TILE / 2, 1 * TILE + TILE / 2),
+			"path starts at Vex's cell center")
+	_check(pts[pts.size() - 1] == Vector2(0.5 * TILE, 6 * TILE + TILE / 2),
+			"path ends at the destination cell center")
+	_check(Vector2(0.5 * TILE, 2 * TILE + TILE / 2) in pts,
+			"path detours through the x=0 lane (0,2)")
+	# Hovering the own cell or an unreachable/wall/off-board cell: no preview.
+	level.SetHoverCell(1, 1)
+	pv = level.GetPathPreview()
+	_check(pv[0] == 0.0, "hovering own cell shows no path")
+	level.SetHoverCell(6, 3)
+	pv = level.GetPathPreview()
+	_check(pv[0] == 0.0, "hovering an obstacle shows no path")
+	level.SetHoverCell(0, 15)
+	pv = level.GetPathPreview()
+	_check(pv[0] == 0.0, "hovering an out-of-range cell shows no path")
+	# SHOOT mode: no preview even over a reachable cell.
+	level.SetActionMode(1)
+	level.SetHoverCell(0, 6)
+	await process_frame
+	pv = level.GetPathPreview()
+	_check(pv[0] == 0.0, "no path preview in shoot mode")
+	# Back to MOVE and a real move: the preview hides once the move is spent.
+	level.SetActionMode(0)
+	level.SetHoverCell(0, 6)
+	await process_frame
+	pv = level.GetPathPreview()
+	_check(pv[0] == 1.0, "path preview shows again in move mode")
+	var click_path := InputEventMouseButton.new()
+	click_path.button_index = MOUSE_BUTTON_LEFT
+	click_path.pressed = true
+	click_path.position = level.IsoCellCenter(Vector2i(0, 6))
+	board.gui_input.emit(click_path)
+	await process_frame
+	_check(p0.position == Vector2(0, 6 * TILE), "click moved Vex to (0,6) with preview")
+	pv = level.GetPathPreview()
+	_check(pv[0] == 0.0, "no path preview after the move is spent")
+	# UNDO re-arms the move: hovering a reachable cell shows the path again.
+	level.UndoMove()
+	await process_frame
+	level.SetHoverCell(0, 5)
+	pv = level.GetPathPreview()
+	_check(pv[0] == 1.0 and pv[2] == 0.0 and pv[3] == 5.0,
+			"UNDO re-arms the path preview on (0,5)")
+	# Enemy turn: hovering shows nothing (even in move mode).
+	level.SetHoverCell(26, 1)
+	level.ForceCurrent("Wisp")
+	await _settle(level)
+	pv = level.GetPathPreview()
+	_check(pv[0] == 0.0, "no path preview during an enemy turn")
+	# Back to a party turn: the mode is reset to MOVE even though the previous
+	# party turn ended in shoot mode (see the wait/shoot-mode reset below).
+	level.SetActionMode(1)
+	level.ForceCurrent("Vex")
+	await _settle(level)
+	_check(level.GetActionMode() == 0, "new party turn always starts in MOVE mode")
+	# Mouse exit hides the preview.
+	level.SetHoverCell(0, 5)
+	pv = level.GetPathPreview()
+	_check(pv[0] == 1.0, "path shows while hovering (0,5)")
+	level.ClearHoverCell()
+	pv = level.GetPathPreview()
+	_check(pv[0] == 0.0, "mouse exit hides the path preview")
+
 	# --- Camera panning: WASD pans the viewport over the board. ---
 	# Levels can be far larger than the window (up to 2000x2000 grids), so the
 	# camera clamps to the board's edges. Test the pan + clamp on a large board.
 	# Tokens live at LOGICAL cell coordinates under Board/Iso (the iso skew
 	# node does the projection), so token.position stays x*TILE, y*TILE.
-	var p0 := level.get_node("Board/Iso/P0")
-	var board := level.get_node("Board")
+	# (p0 — the Vex token — and board are already resolved above.)
 	var viewport: Vector2 = level.size
 	level.SetBoardPixelSize(10000, 10000)
 	# Snap the camera to the board origin (headless: already there; rendered:

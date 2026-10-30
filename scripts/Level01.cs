@@ -146,6 +146,9 @@ public partial class Level01 : Control
     // The shooting-range circle overlay (shoot mode, party turns only): a
     // Polygon2D in the skewed Iso layer, so it appears as an iso ellipse.
     private Polygon2D _rangeCircle = null!;
+    // Move-mode path preview (the BFS route line + destination circle), drawn
+    // in the skewed Iso layer while the mouse hovers a reachable tile.
+    private PathPreview _pathPreview = null!;
     private readonly System.Random _rng = new();
 
     private TurnSystem _turns = null!;
@@ -160,6 +163,10 @@ public partial class Level01 : Control
     private Vector2I _turnStartCell;
     private ActionMode _actionMode = ActionMode.Move;
     private bool _actionUsed;
+
+    // Move-mode path preview: the board cell currently under the mouse (None
+    // when the pointer is off the board or the board doesn't cover it).
+    private Vector2I? _hoverCell;
 
     // The actions menu: a rectangular panel pinned to the bottom-left with the
     // active character's name + equipment on top and the Shoot / Move / Wait /
@@ -200,6 +207,9 @@ public partial class Level01 : Control
         _board = GetNode<Control>("Board");
         _board.MouseFilter = MouseFilterEnum.Stop;
         _board.GuiInput += OnBoardGuiInput;
+        // The board loses hover tracking once the pointer leaves it.
+        // (Mouse motion itself arrives as GuiInput — see OnBoardGuiInput.)
+        _board.MouseExited += OnBoardMouseExited;
         foreach (var name in new[]
         {
             "Center", "Center/Panel",
@@ -444,12 +454,98 @@ public partial class Level01 : Control
 
     private void OnBoardGuiInput(InputEvent @event)
     {
-        // Each party turn allows ONE action (shoot) and ONE move; each path
-        // latches itself (see MoveTo / TryShootAt).
+        // Motion is tracked on every turn (party or enemy) so the hover cell
+        // is fresh when the next turn's RefreshPathPreview runs; only CLICKS
+        // are gated to party turns (one action + one move, each latched).
+        if (@event is InputEventMouseMotion motion)
+        {
+            OnBoardMouseMoved(motion.Position);
+            return;
+        }
         if (!_turnActive || _turns.Current.IsEnemy)
             return;
         if (@event is InputEventMouseButton mouse && mouse.Pressed && mouse.ButtonIndex == MouseButton.Left)
             TryBoardClick(mouse.Position);
+    }
+
+    // --- Move-mode path preview -------------------------------------------
+    // While the mouse hovers a tile the active combatant can move to (move
+    // mode, party's turn, move budget unspent), a line traces the exact BFS
+    // route the token will take, ending in a circle on the destination tile.
+    // Both live in the skewed Iso layer (logical coordinates) and are shown
+    // ONLY in move mode — hovering in shoot mode, on an enemy turn or after
+    // the move is spent shows nothing.
+
+    private void OnBoardMouseMoved(Vector2 boardPos)
+    {
+        var cell = CellFromIso(boardPos);
+        if (cell.X < 0 || cell.X >= GridWidth || cell.Y < 0 || cell.Y >= GridHeight)
+            cell = Vector2I.MinValue; // off-board sentinel (a real cell can't be here)
+        if (cell == _hoverCell)
+            return;
+        _hoverCell = cell;
+        RefreshPathPreview();
+    }
+
+    private void OnBoardMouseExited()
+    {
+        _hoverCell = null;
+        RefreshPathPreview();
+    }
+
+    // (Re)build the hover path overlay from the current state. Called on every
+    // mouse move, on mode switch / move / turn change (via RefreshHighlights),
+    // and after UNDO.
+    private void RefreshPathPreview()
+    {
+        bool show = _hoverCell != null
+            && _actionMode == ActionMode.Move
+            && _turnActive
+            && !_movedThisTurn
+            && !_turns.Combatants[_turns.CurrentIndex].IsEnemy
+            && _reachable.ContainsKey(_hoverCell.Value)
+            && _hoverCell.Value != CurrentCell();
+        if (!show)
+        {
+            _pathPreview.SetPath(new List<Vector2>());
+            return;
+        }
+        var path = BuildPath(CurrentCell(), _hoverCell.Value);
+        var pts = new List<Vector2>(path.Count);
+        foreach (var c in path)
+            pts.Add(new Vector2((c.X + 0.5f) * TileSize, (c.Y + 0.5f) * TileSize));
+        _pathPreview.SetPath(pts);
+    }
+
+    // The BFS route from <start> to <goal> (both in the reachable set): walk
+    // the distance map back from the goal, one step per tile. The result is
+    // the same route the click-to-move would take.
+    private List<Vector2I> BuildPath(Vector2I start, Vector2I goal)
+    {
+        var path = new List<Vector2I>();
+        var cur = goal;
+        // Bound the walk by the map size: the distance map has no cycles.
+        for (int guard = 0; guard <= GridWidth * GridHeight && cur != start; guard++)
+        {
+            path.Add(cur);
+            int d = _reachable[cur];
+            Vector2I next = cur;
+            foreach (var dir in Dirs)
+            {
+                var cand = cur + dir;
+                if (_reachable.TryGetValue(cand, out int cd) && cd == d - 1)
+                {
+                    next = cand;
+                    break;
+                }
+            }
+            if (next == cur)
+                break;
+            cur = next;
+        }
+        path.Add(start); // the route begins at the character's cell
+        path.Reverse();
+        return path;
     }
 
     private void OnEndTurnPressed()
@@ -472,6 +568,9 @@ public partial class Level01 : Control
         _movedThisTurn = false;
         _actionUsed = false;
         UpdateActionMenu();
+        // MoveTokenTo's RefreshHighlights ran while _movedThisTurn was still
+        // latched; the move is re-armed now, so refresh the hover path.
+        RefreshPathPreview();
     }
 
     private void OnBackPressed()
@@ -609,6 +708,36 @@ public partial class Level01 : Control
         return new[] { c.X - radius, c.Y - radius, radius * 2f, radius * 2f };
     }
 
+    /// <summary>Test hook: the active combatant's board-click mode (0 = Move, 1 = Shoot).</summary>
+    public int GetActionMode() => (int)_actionMode;
+
+    /// <summary>Test hook: simulate the mouse hovering cell (x, y) on the board.</summary>
+    public void SetHoverCell(int x, int y) => OnBoardMouseMoved(IsoCellCenter(new Vector2I(x, y)));
+
+    /// <summary>Test hook: simulate the mouse leaving the board.</summary>
+    public void ClearHoverCell() => OnBoardMouseExited();
+
+    /// <summary>Test hook: the hovered path's points (logical cell centers).</summary>
+    public Vector2[] GetHoverPathPoints()
+        => _pathPreview == null ? new Vector2[0] : _pathPreview.Points.ToArray();
+
+    /// <summary>
+    /// Test hook: the move-mode path preview state —
+    /// [lineVisible, endVisible, endX, endY].
+    /// </summary>
+    public float[] GetPathPreview()
+    {
+        if (_pathPreview == null || !_pathPreview.Active)
+            return new[] { 0f, 0f, -1f, -1f };
+        var pos = _pathPreview.EndPoint; // logical cell center
+        return new[]
+        {
+            1f, 1f,
+            pos.X / TileSize - 0.5f,
+            pos.Y / TileSize - 0.5f,
+        };
+    }
+
     private int IndexOf(string name)
     {
         for (int i = 0; i < Roster.Length; i++)
@@ -729,6 +858,9 @@ public partial class Level01 : Control
         _enemyActed = false;
         _actionUsed = false;
         _turnStartCell = CurrentCell();
+        // A new turn always starts in MOVE mode, even if the previous
+        // combatant ended their turn in shoot mode (or used WAIT there).
+        _actionMode = ActionMode.Move;
         _turnLabel.Text = $"ROUND {_turns.Round} — TURN: {_turns.Current.Name}";
         _infoLabel.Text = BuildInitiativeInfo();
         // Active token glows full-bright, the rest dim (modulate also covers
@@ -1252,6 +1384,9 @@ public partial class Level01 : Control
         _grid.Shootable = shootView ? _shootTargets : new HashSet<Vector2I>();
         RefreshGridLabels();
         _grid.Rebuild();
+        // Any change that affects mode/move/turn state also changes what the
+        // hover path preview may show.
+        RefreshPathPreview();
     }
 
     // Rebuild the per-token HP text list the grid layer draws (live tokens
@@ -1297,6 +1432,10 @@ public partial class Level01 : Control
         // pixels inside the skewed layer.
         _grid = new IsoGrid { Name = "Grid", Cols = GridWidth, Rows = GridHeight, Tile = TileSize, Map = Walkable };
         _iso.AddChild(_grid);
+
+        // Move-mode path preview (hover a reachable tile to see the route).
+        _pathPreview = new PathPreview { Name = "HoverPath", ZIndex = 1 };
+        _iso.AddChild(_pathPreview);
 
         for (int i = 0; i < Roster.Length; i++)
         {
