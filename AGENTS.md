@@ -162,12 +162,13 @@ SCENE TEST button:
   only the board node moves. **Mouse-wheel zoom** (`ZoomBoard`, via
   `OnLevelGuiInput`) scales the board by `_cameraScale` (clamped
   `ZoomMin` 0.75 .. `ZoomMax` 1.75, step `ZoomStep` 1.1) around the viewport
-  center. The pan clamp's view size is the window divided by **ZoomMin — NOT
-  the current scale** — and held constant across all zoom levels: the pan
-  limits are the borders of the MOST ZOOMED-OUT view, so a zoomed-in camera
-  can still pan to exactly those same edges (the board overflows the window,
-  which is normal zoom). Clamping to the current (smaller) zoomed-in view
-  instead shrank the pan range and left map corners unreachable. `ResetCamera`
+  center. The pan clamp's view size is the window divided by the **CURRENT
+  scale** (NOT a constant): zoomed in, the viewport covers fewer board
+  pixels, so at the far bottom-right the board's edge is pinned to the
+  SCREEN edge and the camera can pan FURTHER into the board — every square
+  stays reachable at every zoom level. (A constant ZoomMin-based view left a
+  dead zone at the map's far edges proportional to scale-1: at max zoom
+  (1.75) the bottom-right ~30% of the board was unpannable.) `ResetCamera`
   resets both the position AND the scale to 1.0. Test hooks:
   `ResetBoardBounds()` (restore the real iso diamond bounds after
   `SetBoardPixelSize`), `ResetCamera()` (re-center + unzoom), `ZoomBy(dir)`

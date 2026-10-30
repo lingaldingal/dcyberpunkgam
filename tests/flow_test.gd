@@ -281,13 +281,13 @@ func _run_flow() -> void:
 	level.PanCameraBy(Vector2(500, 300))
 	_check(level.GetCameraPos() == Vector2(500, 300), "camera pans to (500,300)")
 	_check(board.position == Vector2(-500, -300), "board offset tracks the camera")
-	# Panning far past the bottom-right edge clamps to the board's edge. The
-	# clamp uses the WIDEST view (the window at full zoom-out, ZoomMin 0.75),
-	# so the reference view is the window / 0.75 — NOT the raw window size.
+	# Panning far past the bottom-right edge clamps to the board's edge. At
+	# scale 1.0 the visible span is the raw window, so the board's right/
+	# bottom edge is pinned to the screen edge: cam = boardSize - window.
 	level.PanCameraBy(Vector2(99999, 99999))
-	_check(absf(level.GetCameraPos().x - (10000 - viewport.x / 0.75)) < 1.0
-			and absf(level.GetCameraPos().y - (10000 - viewport.y / 0.75)) < 1.0,
-			"camera clamps to the board's bottom-right edge (widest-view limit)")
+	_check(absf(level.GetCameraPos().x - (10000 - viewport.x)) < 1.0
+			and absf(level.GetCameraPos().y - (10000 - viewport.y)) < 1.0,
+			"camera clamps to the board's bottom-right edge")
 	# Panning far past the top-left edge clamps back to the origin.
 	level.PanCameraBy(Vector2(-99999, -99999))
 	_check(level.GetCameraPos() == Vector2(0, 0), "camera clamps back to the origin")
@@ -365,48 +365,57 @@ func _run_flow() -> void:
 	await process_frame
 	_check(level.GetCameraScale() >= 0.75 - 1e-3, "zoom out clamps at the min limit")
 	_check(level.GetCameraScale() <= 0.76, "zoom out reaches the min limit")
-	# Zoom/pan interaction: the pan clamp must be based on the WIDEST view
-	# (the reference view at ZoomMin), so a ZOOMED-IN camera can still pan to
-	# the same borders the zoomed-out view shows. The diamond is 1056x576 px;
-	# fully zoomed IN (1.75) its on-screen size (1848x1008) EXCEEDS the
-	# 1280x720 window, so with a zoom-dependent clamp the pan range would
-	# shrink below the board size — leaving map corners unreachable. With the
-	# widest-view clamp, the pan range stays the full board size at every
-	# zoom level.
+	# Zoom/pan interaction: the clamp's visible span is window/scale, so at
+	# the far bottom-right the board's edge is pinned to the SCREEN edge at
+	# every zoom level — every square stays reachable no matter how zoomed
+	# in. The iso bounds are x:[-384, 672] (width 1056), y:[0, 528]. The
+	# far-corner camera limit is bounds.End - window/scale, so:
+	#   zoomed in  (1.75): x = 672 - 731.4 = -59.4 / y = 528 - 411.4 = 116.6
+	#   zoomed out (0.75): the diamond (1056x528) fits inside the view
+	#     (1707x960), so it slides to its single centered point (-384, 0).
 	level.ResetCamera()
 	await process_frame
-	# Zoomed OUT (0.75, widest view): the reference pan limits.
+	# Fully zoomed OUT (0.75): the diamond is smaller than the view on both
+	# axes, so panning in either direction clamps to the centered position.
 	for i in 20:
 		level.ZoomBy(-1.0)
 	await process_frame
-	level.PanCameraBy(Vector2(-1e6, -1e6))
-	var min_out: Vector2 = level.GetCameraPos()
 	level.PanCameraBy(Vector2(1e6, 1e6))
 	await process_frame
 	var max_out: Vector2 = level.GetCameraPos()
-	# Range for a board smaller than the widest view is (view - board):
-	# x = 1280/0.75 - 1056 = 650.7, y = 720/0.75 - 576 = 384.
-	_check((max_out - min_out).x > 500.0 and (max_out - min_out).y > 300.0,
-			"zoomed-out view has a real pan range across the diamond")
-	# Fully zoomed IN (1.75): the diamond is bigger than the window, yet the
-	# pan range must be UNCHANGED (same borders as the widest view).
+	level.PanCameraBy(Vector2(-1e6, -1e6))
+	await process_frame
+	var min_out: Vector2 = level.GetCameraPos()
+	_check(absf(max_out.x - (-384.0)) < 1.0 and absf(max_out.y - 0.0) < 1.0,
+			"zoomed-out far pan stops at the board's top-left (-384 / 0)")
+	_check(absf(min_out.x - (672.0 - 1280.0 / 0.75)) < 1.0
+			and absf(min_out.y - (528.0 - 720.0 / 0.75)) < 1.0,
+			"zoomed-out near pan stops at bounds.End - view (-1034.7 / -432)")
+	# Fully zoomed IN (1.75): the diamond's on-screen size (1848x924)
+	# EXCEEDS the 1280x720 window, so the board clamps at its edges and the
+	# far (bottom-right) corner is pinned to the SCREEN edge — reachable
+	# camera position bounds.End - window/1.75 (-59.4 / 116.6), FURTHER into
+	# the board than the zoomed-out far point (which would leave the
+	# bottom-right of the map unpannable).
 	for i in 20:
 		level.ZoomBy(1.0)
 	await process_frame
 	_check(level.GetCameraScale() >= 1.74, "zoomed in to the max limit for the pan-limit check")
-	level.PanCameraBy(Vector2(-1e6, -1e6))
-	var min_in: Vector2 = level.GetCameraPos()
 	level.PanCameraBy(Vector2(1e6, 1e6))
 	await process_frame
 	var max_in: Vector2 = level.GetCameraPos()
-	_check(absf((max_in - min_in).x - (max_out - min_out).x) < 1.0,
-			"zoomed-in pan range matches the zoomed-out range (x)")
-	_check(absf((max_in - min_in).y - (max_out - min_out).y) < 1.0,
-			"zoomed-in pan range matches the zoomed-out range (y)")
-	_check(absf(max_in.x - max_out.x) < 1.0 and absf(min_in.x - min_out.x) < 1.0,
-			"zoomed-in pan limits equal the zoomed-out limits (x)")
-	_check(absf(max_in.y - max_out.y) < 1.0 and absf(min_in.y - min_out.y) < 1.0,
-			"zoomed-in pan limits equal the zoomed-out limits (y)")
+	level.PanCameraBy(Vector2(-1e6, -1e6))
+	await process_frame
+	var min_in: Vector2 = level.GetCameraPos()
+	_check(absf(max_in.x - (672.0 - 1280.0 / 1.75)) < 1.0
+			and absf(max_in.y - (528.0 - 720.0 / 1.75)) < 1.0,
+			"zoomed-in far corner pinned to the screen edge (-59.4 / 116.6)")
+	_check(max_in.x > max_out.x and max_in.y > max_out.y,
+			"zooming in extends the reachable far edge into the board")
+	# The near edge (board's top-left at the screen edge) is the board's
+	# Position, unchanged by zoom: min camera = (-384, 0) at every level.
+	_check(absf(min_in.x - (-384.0)) < 1.0 and absf(min_in.y - 0.0) < 1.0,
+			"zoomed-in near edge stays at the board's top-left")
 	# Reset restores the default (no zoom) centered view.
 	level.ResetCamera()
 	await process_frame

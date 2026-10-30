@@ -405,15 +405,17 @@ public partial class Level01 : Control
     // board's own children keep their board-local coordinates; only the board
     // moves). The camera is the board pixel at the viewport's top-left.
     //
-    // For each axis the two legal extremes are:
-    //   camMax = bounds.Min       (board's left/top edge at the screen edge)
+    // For each axis the two legal extremes are, for the CURRENT zoom:
+    //   camMax = bounds.Min        (board's left/top edge at the screen edge)
     //   camMin = bounds.Max - view (board's right/bottom edge at the screen edge)
-    // When the board is LARGER than the viewport (camMin <= camMax) the valid
-    // range is [camMin, camMax] and the board clamps at its edges. When the
-    // board is SMALLER (camMin > camMax) the range is [camMax, camMin]: the
-    // board may slide anywhere while staying fully on-screen, and the MIDPOINT
-    // ((bounds.Center) - view/2) is exactly where CenterCamera puts it — i.e.
-    // the diamond is centered in the window at every resolution.
+    // where view = window / current scale — the board-space span the viewport
+    // covers right now. When the board is LARGER than that (camMin <= camMax)
+    // the valid range is [camMin, camMax] and the board clamps at its edges;
+    // the full board is therefore always reachable at every zoom level. When
+    // the board is SMALLER (camMin > camMax) the range is [camMax, camMin]:
+    // the board may slide anywhere while staying fully on-screen, and the
+    // MIDPOINT ((bounds.Center) - view/2) is exactly where CenterCamera puts
+    // it — i.e. the diamond is centered in the window at every resolution.
     //
     // This interval (not a single point) is what makes WASD panning visible on
     // a small board: the old clamp collapsed to one bottom-right-pinned point
@@ -425,17 +427,19 @@ public partial class Level01 : Control
         if (_board == null)
             return;
 
-        // The board is scaled by _cameraScale (mouse-wheel zoom). The clamp
-        // limits are computed for the WIDEST view — the window at full
-        // zoom-out (ZoomMin) — and held CONSTANT across every zoom level.
-        // That makes the pan limits the borders of the most zoomed-out view:
-        // zoomed in, you can still pan all the way to the same edges (the
-        // board is larger on-screen, so it overflows, which is normal zoom).
-        // Clamping to the current (smaller, zoomed-in) view instead would
-        // shrink the pan range and leave parts of the map unreachable.
+        // The board is scaled by _cameraScale (mouse-wheel zoom), so the
+        // viewport covers FEWER board pixels when zoomed in. The clamp view
+        // must therefore be the window divided by the CURRENT scale: at the
+        // far bottom-right, the board's right/bottom edge is pinned to the
+        // screen edge, and since the visible span is smaller when zoomed in,
+        // the camera can go further into the board — i.e. every square stays
+        // reachable at any zoom level. (Clamping to a constant, wider view
+        // left a dead zone at the map's far edges proportional to scale-1:
+        // at max zoom (1.75) the bottom-right ~30% of the board was
+        // unpannable.)
         float scale = _cameraScale > 0 ? _cameraScale : 1f;
-        float viewW = (Size.X > 0 ? Size.X : 1) / ZoomMin;
-        float viewH = (Size.Y > 0 ? Size.Y : 1) / ZoomMin;
+        float viewW = (Size.X > 0 ? Size.X : 1) / scale;
+        float viewH = (Size.Y > 0 ? Size.Y : 1) / scale;
 
         float loX = _isoBounds.End.X - viewW;   // board's right edge at screen right
         float hiX = _isoBounds.Position.X;      // board's left edge at screen left
