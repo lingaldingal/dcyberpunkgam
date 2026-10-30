@@ -168,22 +168,27 @@ SCENE TEST button:
   `Board.Position = -camera`; the board's children keep board-local coords;
   only the board node moves. **Mouse-wheel zoom** (`ZoomBoard`, via
   `OnLevelGuiInput`) scales the board by `_cameraScale` (clamped
-  `ZoomMin` 0.9 .. `ZoomMax` 1.75, step `ZoomStep` 1.1) around the viewport
-  center. The pan clamp's view size is the window divided by the **CURRENT
-  scale** (NOT a constant): zoomed in, the viewport covers fewer board
-  pixels, so at the far bottom-right the board's edge is pinned to the
-  SCREEN edge and the camera can pan FURTHER into the board — every square
-  stays reachable at every zoom level. (A constant ZoomMin-based view left a
-  dead zone at the map's far edges proportional to scale-1: at max zoom
-  (1.75) the bottom-right ~30% of the board was unpannable.) `ResetCamera`
+  `ZoomMin` 0.9 .. `ZoomMax` 1.75, step `ZoomStep` 1.1), anchored on the
+  **CURSOR** (zoom-to-cursor: the board pixel under the mouse stays at the
+  same screen position; `ZoomBoard(dir, anchor)` takes the screen anchor,
+  wheel passes `me.Position`, default is the viewport center — used by
+  `ZoomBy`). The anchor math must be `cam' = (anchor + cam) * (next/old) -
+  anchor`: a plain `cam += (next-old)*anchor` only works when cam is 0.
+  **The pan clamp scales the iso bounds too**: screen = p*scale - camera, so
+  the legal camera range is `bounds.Min*scale .. bounds.Max*scale - window`.
+  (Clamping to the UNSCALED diamond left the map's left/bottom/right corners
+  cut off when zoomed in — e.g. at 1.75 the diamond's left vertex needed
+  camera.x ≤ -896 but the old clamp stopped at -512.) `ResetCamera`
   resets both the position AND the scale to 1.0. Test hooks:
   `ResetBoardBounds()` (restore the real iso diamond bounds after
   `SetBoardPixelSize`), `ResetCamera()` (re-center + unzoom), `ZoomBy(dir)`
-  (one wheel notch), `GetCameraScale()`. flow_test's camera section covers
-  the large-board edge clamp (with the widest-view limit), the small-board
-  centering + WASD-sticks case, and the zoom/pan interaction (zoomed-in pan
-  range == zoomed-out pan range). The info panel is constrained (800px +
-  autowrap) so long text never overflows.
+  (one wheel notch, center-anchored), `ZoomAt(screenPos, dir)` (one wheel
+  notch, cursor-anchored), `GetCameraScale()`. flow_test's camera section
+  covers the large-board edge clamp, the small-board centering + WASD-sticks
+  case, zoom-to-cursor / center-anchor no-drift, the scaled zoom/pan
+  interaction, and **grid-corner reachability at max zoom** (all 4 corners
+  pan-able into view). The info panel is constrained (800px + autowrap) so
+  long text never overflows.
 - **Enemies act** (move first, then shoot, see the Combat section's "Enemy
   AI") after a short delay (12 frames) in `_Process`, then **automatically
   end their turn**. Guarded by `_enemyActed` so the turn ends exactly once.
