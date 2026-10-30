@@ -20,7 +20,7 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - `scripts/TurnSystem.cs` — round-based initiative turn order (see below)
 - `dcyberpunkgam.csproj` / `dcyberpunkgam.sln` — .NET project (Godot.NET.Sdk 4.7.2, net8.0)
 - `run.sh` — builds the C# then launches the game with the Mono Godot binary (the command the user runs to play)
-- `tests/flow_test.gd` — headless SceneTree functional test (menu → level → 8-combatant initiative → rounds → movement range → BFS reachability → **camera panning + clamping** → **mouse click-to-move** (incl. click **behind** an obstacle/character via BFS detour) → once-per-turn + UNDO → enemy auto-move + auto turn-end → back). ~60 checks.
+- `tests/flow_test.gd` — headless SceneTree functional test (menu → level → 8-combatant initiative → rounds → movement range → BFS reachability → **move-mode path preview** (hover route line + endpoint circle, hide cases) → **camera panning + clamping** → **mouse click-to-move** (incl. click **behind** an obstacle/character via BFS detour) → once-per-turn + UNDO → enemy auto-move + auto turn-end → back). ~79 checks.
 - `tests/cutscene_test.gd` — headless functional test (menu → SCENE TEST → reveal, speaker alternation, highlight, back)
 - `tests/resolution_test.gd` — headless test: menu RESOLUTION button cycles 1280x720 → 1600x900 → 1920x1080 → back
 - `tests/combat_test.gd` — headless combat test (equipment + random weapon assignment, **circle-based shoot range (any direction, dx²+dy² ≤ range²) + LOS blocking by walls AND characters**, shooting-circle overlay, **weapon-based range/damage: pistol 4/2, rifle 6/3**, once-per-turn, WAIT, **enemy AI (move into shooting circle / hold + shoot)**, **BioStim heal**, death removes token + skips turns, **END TURN button in the actions menu**, action-menu screen clamping). ~100 checks.
@@ -92,8 +92,24 @@ SCENE TEST button:
   position after a move (not recomputed from the new position) so the full
   range stays valid for the rest of the turn. (WASD no longer moves tokens —
   it now pans the camera, see below. The old `_Input` handler was removed.)
-  Tests emit clicks at `level.IsoCellCenter(Vector2i(x, y))` — the forward
-  cell-center projection — so headless click tests resolve to the exact cell.
+- **Move-mode path preview**: hovering a tile the active PARTY combatant can
+  move to (move mode only) draws the BFS **route** it would take as a
+  polyline through the intermediate cells + a **circle** on the destination
+  cell. Drawn by `scripts/PathPreview.cs` (a `Node2D` under the skewed `Iso`
+  layer — GodotSharp 4.7.2 has **no** `Polyline2D`/`Circle2D`, so it
+  `_Draw`s with `DrawPolyline`+`DrawCircle`) in **LOGICAL** board pixels
+  (cell centers), so the iso skew does the projection. Hover is tracked via
+  `InputEventMouseMotion` in `OnBoardGuiInput` (no `MouseMoved` on `Control`
+  in 4.7.2); motion is tracked on every turn, clicks stay party-gated. The
+  preview is shown **only in move mode** and hides on shoot/wait modes, enemy
+  turns, after the move is spent, and for wall/unreachable/off-board hovers
+  (`RefreshPathPreview` gates all of these). **New party turns always reset to
+  MOVE mode** (`SetActive` sets `_actionMode=Move` for party) even if the
+  previous character ended in wait/shoot. Test hooks: `SetHoverCell(x,y)`,
+  `ClearHoverCell()`, `GetHoverPathPoints() -> Vector2[]` (logical centers),
+  `GetPathPreview() -> float[4]` `[lineVis, endVis, endX, endY]`.
+  `flow_test.gd` covers the route shape (detour via the open x=0 lane), the
+  endpoint circle, and the hide cases (~79 checks total now).
 - **Isometric projection.** `level_01` is 2:1 iso. The `Board` Control holds
   an `Iso` Node2D child with a skew `Transform2D(X=(.5,.25), Y=(-.5,.25))`.
   Everything that must look skewed (floor, walls, highlights, tokens, range
