@@ -36,7 +36,7 @@ public partial class IsoGrid : Node2D
     private static readonly Color WallTop = new(0.16f, 0.14f, 0.22f);
     private static readonly Color WallSideL = new(0.09f, 0.08f, 0.14f);
     private static readonly Color WallSideR = new(0.12f, 0.10f, 0.17f);
-    private const float WallHeight = 14f;
+    private const float WallHeight = 18f;
     private static readonly Color MoveHl = new(0.3f, 0.9f, 0.6f, 0.28f);
     private static readonly Color ShootHl = new(0.95f, 0.35f, 0.3f, 0.38f);
     private static readonly Color MeleeHl = new(0.98f, 0.62f, 0.2f, 0.42f);
@@ -137,10 +137,10 @@ public partial class IsoGrid : Node2D
         foreach (var (x, y, text) in TokenLabels)
         {
             // Cell center in this (logical) local space, lifted above the tile.
-            var pos = new Vector2((x + 0.5f) * Tile, (y + 0.5f) * Tile) + new Vector2(0, -26);
-            DrawStringOutline(font, pos, text, HorizontalAlignment.Center, 0, 12, 3,
+            var pos = new Vector2((x + 0.5f) * Tile, (y + 0.5f) * Tile) + new Vector2(0, -34);
+            DrawStringOutline(font, pos, text, HorizontalAlignment.Center, 0, 14, 3,
                 new Color(0, 0, 0, 0.9f));
-            DrawString(font, pos, text, HorizontalAlignment.Center, 0, 12, HpText);
+            DrawString(font, pos, text, HorizontalAlignment.Center, 0, 14, HpText);
         }
     }
 }

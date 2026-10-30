@@ -15,7 +15,7 @@ public partial class PathPreview : Node2D
     public static readonly Color LineColor = new(0.4f, 0.95f, 0.6f, 0.9f);
     public static readonly Color EndColor = new(0.4f, 0.95f, 0.6f, 0.35f);
     private const float LineWidth = 3f;
-    private const float EndRadius = 48f * 0.5f; // one half-tile
+    private const float EndRadius = 32f; // one half-tile (TileSize 64)
 
     // The route in LOGICAL board pixels (cell centers). Empty = hidden.
     public List<Vector2> Points { get; set; } = new();

@@ -7,7 +7,7 @@ extends SceneTree
 # the bottom-left actions menu (name on top, always on screen).
 # Run: godot --headless --path . -s res://tests/combat_test.gd
 
-const TILE := 48
+const TILE := 64
 const SHOOT := 1  # Level01.ActionMode.Shoot
 const MOVE := 0   # Level01.ActionMode.Move
 
