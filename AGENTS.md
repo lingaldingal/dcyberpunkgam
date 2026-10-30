@@ -10,7 +10,9 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - `scenes/scene_test.tscn` — basic 2D cutscene (two placeholder characters L/R, scrolling cheese dialogue, speaker highlight)
 - `scripts/GameManager.cs` — autoload: scene flow (StartGame / StartSceneTest / QuitToMenu); exposes `Instance`
 - `scripts/MainMenu.cs` — menu buttons incl. `OnResolutionPressed()` (cycles window size); `GetResolution()` test hook
-- `scripts/Level01.cs`, `scripts/SceneTest.cs`
+- `scripts/Level01.cs` (turn-based iso arena logic), `scripts/SceneTest.cs`
+- `scripts/IsoGrid.cs` — Node2D in the skewed `Iso` layer: draws floor diamonds, wall extrusion, move/shoot highlights + HP readouts in LOGICAL board pixels (the skew does the iso)
+- `scripts/TokenNode.cs` — Node2D per combatant under `Board/Iso`, draws a filled diamond at its cell corner; name rendered by Level01 as an unskewed Label overlay
 - `scripts/Character.cs` — combatant data (Name, Color, Agility, `IsEnemy`, `MovementRange` = 5 + Agility/2 floored, `Constitution`/`HitPoints`/`MaxHitPoints`, `Equipment`, `Items` inventory, `UseItem`/`GetItemCount`/`Heal`)
 - `scripts/Weapon.cs` — `Weapon` (Name, Range, Damage); built-ins `Pistol` (4/2) + `Rifle` (6/3)
 - `scripts/Item.cs` — `Item` (Name, HealValue); built-in `BioStim` (heal 6)
@@ -84,15 +86,27 @@ SCENE TEST button:
   position after a move (not recomputed from the new position) so the full
   range stays valid for the rest of the turn. (WASD no longer moves tokens —
   it now pans the camera, see below. The old `_Input` handler was removed.)
+- **Isometric projection.** `level_01` is 2:1 iso. The `Board` Control holds
+  an `Iso` Node2D child with a skew `Transform2D(X=(.5,.25), Y=(-.5,.25))`.
+  Everything that must look skewed (floor, walls, highlights, tokens, range
+  overlay) is drawn inside `Iso` in **LOGICAL board pixels** (`x*TILE,
+  y*TILE`); the skew maps logical `(x,y)` → screen `((x-y)/2*TILE,
+  (x+y)/4*TILE)`. Name labels are unskewed `Label` Controls under `Board`,
+  repositioned via `IsoCellCenter` each frame. Inverse: `gx=(X+2Y)/T,
+  gy=(-X+2Y)/T` (`CellFromIso`). The iso board bounding box is
+  `W=(W+H)*TILE/2`, `H=(W+H)*TILE/4`.
 - **Camera panning (WASD).** Levels can be far larger than the window
   (up to 2000×2000 grids), so the board is offset by `-camera` and **WASD /
   arrow keys pan the viewport** one tile per frame (`UpdateCamera` in
   `_Process`, `CameraPanSpeed` = one tile/frame). `_cameraPos` is the board
-  pixel at the viewport's top-left; `ApplyCamera()` clamps it to
-  `[0, board - view]` per axis (so a board smaller than the window stays
-  pinned to the origin) and sets `Board.Position = -camera`. The board's
-  children keep board-local coords; only the board node moves. The info
-  panel is constrained (800px + autowrap) so long text never overflows.
+  pixel at the viewport's top-left; `ApplyCamera()` clamps it to the **iso
+  bounding box minus the viewport** per axis (a board smaller than the window
+  gets centered, not pinned). The camera **starts centered** on the iso bbox
+  (done once in the first `_Process` where `Size` is valid; in headless test
+  mode `Size` is (0,0) so it stays at the origin — flow_test's pan assertions
+  rely on that). `Board.Position = -camera`; the board's children keep
+  board-local coords; only the board node moves. The info panel is
+  constrained (800px + autowrap) so long text never overflows.
 - **Enemies act** (move first, then shoot, see the Combat section's "Enemy
   AI") after a short delay (12 frames) in `_Process`, then **automatically
   end their turn**. Guarded by `_enemyActed` so the turn ends exactly once.
@@ -137,11 +151,15 @@ SCENE TEST button:
   `Weapon.Pistol` (range 4, dmg 2) and `Weapon.Rifle` (range 6, dmg 3) are the
   two built-in weapons. `IsShootCell` / `ComputeShootTargets` / `TryShootAt`
   are all weapon-aware (range + damage come from the active combatant's
-  `Equipment.Weapon`). In **shoot mode** a soft range circle
-  (`_rangeCircle`, radius = range tiles, centered on the tile center) is drawn
-  around the active PARTY shooter so the player can see the range (hidden for
-  enemy turns / other modes); test hook `GetRangeCircle() -> float[4]`
-  returns `[x, y, w, h]` or `[-1,-1,-1,-1]` when hidden.
+  `Equipment.Weapon`). In **shoot mode** a soft range overlay
+  (`_rangeCircle`, in the skewed `Iso` layer, radius = range tiles, centered
+  on the cell's LOGICAL center) is drawn around the active PARTY shooter so
+  the player can see the range (hidden for enemy turns / other modes). In
+  logical space it is a 45° square (corners at distance r); under the iso
+  skew it projects to an on-screen diamond with a SQUARE bounding box of side
+  `2*range*TILE`. Test hook `GetRangeCircle() -> float[4]` returns the
+  **board-space** `[x, y, w, h]` (center = iso cell center, w=h=2*range*TILE)
+  or `[-1,-1,-1,-1]` when hidden.
 - **Equipment** (`Equipment.cs`): head + body + weapon. Basic gear for now —
   Ballistic Cap (head) + Weave Vest (body) + a **random** Pistol or Rifle for
   ALL 8 combatants (assigned in `AssignStartingGear()`). `Equipment.ToText()`
@@ -249,6 +267,20 @@ Fix: menu/stage content lives in a full-rect `CenterContainer` + `VBoxContainer`
 never mix `anchors_preset` with explicit `anchor_*` values that disagree.
 
 ## Gotchas
+- **Iso token/label paths**: tokens are `Node2D` `TokenNode`s under
+  `Board/Iso` (names `P0`..`P3`, `E0`..`E3`); tests must look them up at
+  `Board/Iso/P0`, not `Board/P0` (they're no longer `Control`s). Token
+  `position` is the LOGICAL cell corner (`x*TILE, y*TILE`); the iso skew is on
+  the parent `Iso` node, so `get_global_position()` already returns the skewed
+  screen/board-space point.
+- **IsoGrid degenerate polygons**: `Diamond(x,y)` returns corners in the order
+  `[right, bottom, left, top]`. Wall side-faces must use ADJACENT corners
+  `(right,bottom)` and `(bottom,left)`; using opposite corners makes a
+  degenerate line that spams `Invalid polygon data, triangulation failed`
+  (16k+ errors) and drags headless tests down to a crawl.
+- **Headless window `Size` is (0,0)**: in `--headless`/`-s` mode the viewport
+  has no size, so the one-time centered-camera init is skipped and the camera
+  stays at the origin (flow_test's pan/clamp assertions depend on that).
 - Fresh clones have no `.godot/` cache. A direct `godot --path .` run does NOT
   auto-import textures (`.godot/imported` stays empty), so any scene referencing
   imported assets fails to load on a fresh clone until `--import` is run once.

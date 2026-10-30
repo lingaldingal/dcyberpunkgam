@@ -78,13 +78,14 @@ func _run_flow() -> void:
 	await process_frame
 
 	# Level hosts exactly 8 tokens: 4 party (P*) + 4 enemies (E*).
+	# Tokens are Node2Ds under the skewed "Iso" layer (Board/Iso/*).
 	var party := 0
 	var enemies := 0
-	for c in level.get_node("Board").get_children():
+	for c in level.get_node("Board/Iso").get_children():
 		var n := String(c.name)
-		if c is Control and n.begins_with("P"):
+		if c is Node2D and n.begins_with("P"):
 			party += 1
-		elif c is Control and n.begins_with("E"):
+		elif c is Node2D and n.begins_with("E"):
 			enemies += 1
 	_check(party == 4, "level has 4 party tokens (got %d)" % party)
 	_check(enemies == 4, "level has 4 enemy tokens (got %d)" % enemies)
@@ -182,10 +183,15 @@ func _run_flow() -> void:
 	# --- Camera panning: WASD pans the viewport over the board. ---
 	# Levels can be far larger than the window (up to 2000x2000 grids), so the
 	# camera clamps to the board's edges. Test the pan + clamp on a large board.
-	var p0 := level.get_node("Board/P0")
+	# Tokens live at LOGICAL cell coordinates under Board/Iso (the iso skew
+	# node does the projection), so token.position stays x*TILE, y*TILE.
+	var p0 := level.get_node("Board/Iso/P0")
 	var board := level.get_node("Board")
 	var viewport: Vector2 = level.size
 	level.SetBoardPixelSize(10000, 10000)
+	# Snap the camera to the board origin (headless: already there; rendered:
+	# the camera starts centered, so pan far past the top-left edge).
+	level.PanCameraBy(Vector2(-1e6, -1e6))
 	await process_frame
 	_check(level.GetCameraPos() == Vector2(0, 0), "camera starts at the board origin")
 	_check(board.position == Vector2(0, 0), "board offset is zero at the origin")

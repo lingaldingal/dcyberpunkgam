@@ -216,17 +216,19 @@ func _run() -> void:
 	level.SetWeapon("Vex", true)
 	level.ForceCurrent("Vex")
 	level.SetActionMode(SHOOT)
-	# The shooting-range circle is drawn in shoot mode: radius = weapon range
-	# (6 tiles = 288px), centered on Vex at (9,1) — origin (168, -216) px.
+	# The shooting-range overlay is drawn in shoot mode: a range diamond of
+	# 2*range pixels (6 tiles = 288px) centered on Vex at (9,1). Its center is
+	# the CELL CENTER's ISO board-space position: iso(x,y) = ((x-y)/2, (x+y)/4)
+	# in board pixels, cell center (9.5, 1.5) -> ((9.5-1.5)/2, (9.5+1.5)/4)*48
+	# = (192, 132).
 	var circle: Array = level.GetRangeCircle()
 	_check(circle[2] > 0.0 and circle[3] > 0.0,
 			"shooting circle is drawn when shoot is selected (got %s)" % str(circle))
 	_check(absf(circle[2] - 12 * TILE) < 0.5 and absf(circle[3] - 12 * TILE) < 0.5,
 			"circle diameter = 2x weapon range in tiles (got %dx%d px)" % [int(circle[2]), int(circle[3])])
-	# The circle's origin = cell-center - radius; the center sits on the tile
-	# CENTER (+TILE/2), so expected origin = cell*TILE + TILE/2 - radius.
-	var cx: float = 9 * TILE + TILE / 2 - 6 * TILE
-	var cy: float = 1 * TILE + TILE / 2 - 6 * TILE
+	# The origin = iso cell center - radius.
+	var cx: float = ((9.5 - 1.5) / 2.0) * TILE - 6 * TILE
+	var cy: float = ((9.5 + 1.5) / 4.0) * TILE - 6 * TILE
 	_check(absf(circle[0] - cx) < 0.5 and absf(circle[1] - cy) < 0.5,
 			"circle is centered on the character's cell (got origin %s)" % str(circle))
 	_check(level.IsShootTarget(15, 1), "rifle: 6 squares east is a shoot target")
@@ -405,7 +407,7 @@ func _run() -> void:
 	_check(level.GetCurrentName() == "Rook",
 			"Brute auto-ended, Rook is active (got '%s')" % level.GetCurrentName())
 	var end_turn: Button = level.get_node("Center/Panel/Actions/EndTurn")
-	var token_wisp: Node = board.get_node("E3")
+	var token_wisp: Node = board.get_node("Iso/E3")
 	var shots := 0
 	while level.IsAlive("Wisp") and shots < 8:
 		level.SetTokenCell("Rook", 8, 1)
