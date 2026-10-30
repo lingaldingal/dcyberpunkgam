@@ -19,6 +19,9 @@ public partial class IsoGrid : Node2D
     public IEnumerable<Vector2I> Reachable { get; set; } = new HashSet<Vector2I>();
     // Cells the active combatant can shoot (red diamonds).
     public IEnumerable<Vector2I> Shootable { get; set; } = new HashSet<Vector2I>();
+    // Cells the active combatant can hit with the melee weapon (orange diamonds):
+    // the four directly adjacent squares holding a live token.
+    public IEnumerable<Vector2I> Meleeable { get; set; } = new HashSet<Vector2I>();
     // (x, y, hp text) per live token, drawn above the token's diamond.
     public List<(int X, int Y, string Text)> TokenLabels = new();
 
@@ -31,6 +34,7 @@ public partial class IsoGrid : Node2D
     private const float WallHeight = 14f;
     private static readonly Color MoveHl = new(0.3f, 0.9f, 0.6f, 0.28f);
     private static readonly Color ShootHl = new(0.95f, 0.35f, 0.3f, 0.38f);
+    private static readonly Color MeleeHl = new(0.98f, 0.62f, 0.2f, 0.42f);
     private static readonly Color HpText = new(0.9f, 0.95f, 1f);
 
     public void Rebuild() => QueueRedraw();
@@ -106,11 +110,13 @@ public partial class IsoGrid : Node2D
             }
         }
 
-        // 2. Highlights (move = green, shoot = red).
+        // 2. Highlights (move = green, shoot = red, melee = orange).
         foreach (var cell in Reachable)
             DrawColoredPolygon(Diamond(cell.X, cell.Y), MoveHl);
         foreach (var cell in Shootable)
             DrawColoredPolygon(Diamond(cell.X, cell.Y), ShootHl);
+        foreach (var cell in Meleeable)
+            DrawColoredPolygon(Diamond(cell.X, cell.Y), MeleeHl);
 
         // 3. Token HP readouts, drawn last so they sit on top of everything.
         var font = ThemeDB.FallbackFont;

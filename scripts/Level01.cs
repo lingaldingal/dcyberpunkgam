@@ -28,19 +28,31 @@ namespace Dcyberpunkgam;
 /// the player can see who is in range. Party members also start with
 /// BioStims (heal items).
 ///
-/// Actions: per turn each combatant has ONE action (SHOOT / WAIT / item) and
-/// ONE move. Mode switching (SHOOT <-> MOVE) is free; using either budget
-/// latches it until END TURN (UNDO restores the turn-start cell and re-arms
-/// everything).
+/// Melee: every combatant also carries a melee weapon (knife 3 dmg or katana
+/// 5 dmg, rolled like the ranged one). The melee action hits a live token on
+/// one of the FOUR directly adjacent squares (left, right, up, down — no
+/// diagonals) for the weapon's damage. Melee and shoot are the SAME one
+/// action: using one bars the other until END TURN. In melee mode the
+/// adjacent cells holding tokens are highlighted orange and a click on one
+/// strikes.
+///
+/// Actions: per turn each combatant has ONE action (SHOOT / MELEE / WAIT /
+/// item) and ONE move. Mode switching (MOVE <-> SHOOT <-> MELEE) is free;
+/// using either budget latches it until END TURN (UNDO restores the
+/// turn-start cell and re-arms everything).
 ///
 /// Enemy AI: enemies follow the same rules as the player — one action
-/// (shoot / wait / item) and one move per turn. On its turn an enemy
-/// approaches the nearest living party member along the BFS path, STOPPING
-/// as soon as it stands inside its weapon's shooting circle (target within
-/// range with a clear line of sight) — it moves into shooting range rather
-/// than right up to the player — then (from the new position) shoots it.
-/// The move and the shot each latch the same per-turn budgets a player uses,
-/// so the actions menu reflects what the enemy has spent.
+/// (shoot / melee / wait / item) and one move per turn. On its turn an
+/// enemy approaches the nearest living party member along the BFS path,
+/// STOPPING as soon as it stands inside its weapon's shooting circle (target
+/// within range with a clear line of sight) — it moves into shooting range
+/// rather than right up to the player. Then it PREFERS the ranged attack: it
+/// shoots (from the new position) when that is possible, and falls back to
+/// the melee weapon when the target is on a directly adjacent square (or it
+/// already stood in shooting range but the line of sight is blocked by a wall
+/// or another character). The move and the action each latch the same
+/// per-turn budgets a player uses, so the actions menu reflects what the
+/// enemy has spent.
 ///
 /// Camera: the board is a plain Control that can be far larger than the window
 /// (levels are up to 2000x2000 grids). <see cref="_cameraPos"/> is the top-left
@@ -93,7 +105,7 @@ public partial class Level01 : Control
     private const string BodyGear = "Weave Vest";
     private const int PartyBioStims = 2;
 
-    public enum ActionMode { Move, Shoot }
+    public enum ActionMode { Move, Shoot, Melee }
 
     private static readonly Vector2I[] Dirs =
     {
@@ -170,6 +182,9 @@ public partial class Level01 : Control
     private bool _turnActive;
     private Dictionary<Vector2I, int> _reachable = new();
     private HashSet<Vector2I> _shootTargets = new();
+    // Cells the active party member can hit with the melee weapon: the four
+    // directly adjacent squares (left, right, up, down) holding a live token.
+    private HashSet<Vector2I> _meleeTargets = new();
 
     // Per-turn budget: ONE action (shoot / wait / item) and ONE move. Mode
     // switching is free; using either budget latches it until END TURN.
@@ -190,6 +205,7 @@ public partial class Level01 : Control
     private Label _actionMenuName = null!;
     private Label _actionMenuEquip = null!;
     private Button _shootButton = null!;
+    private Button _meleeButton = null!;
     private Button _moveButton = null!;
     private Button _waitButton = null!;
     private Button _healButton = null!;
@@ -823,6 +839,9 @@ public partial class Level01 : Control
     /// <summary>Whether cell (x, y) is a valid shoot target for the active combatant.</summary>
     public bool IsShootTarget(int x, int y) => _shootTargets.Contains(new Vector2I(x, y));
 
+    /// <summary>Whether cell (x, y) is a valid melee target for the active combatant.</summary>
+    public bool IsMeleeTarget(int x, int y) => _meleeTargets.Contains(new Vector2I(x, y));
+
     /// <summary>Test hook: teleport a token to a cell (used to set up shoot distances).</summary>
     public void SetTokenCell(string name, int x, int y)
     {
@@ -853,7 +872,7 @@ public partial class Level01 : Control
         return new[] { c.X - radius, c.Y - radius, radius * 2f, radius * 2f };
     }
 
-    /// <summary>Test hook: the active combatant's board-click mode (0 = Move, 1 = Shoot).</summary>
+    /// <summary>Test hook: the active combatant's board-click mode (0 = Move, 1 = Shoot, 2 = Melee).</summary>
     public int GetActionMode() => (int)_actionMode;
 
     /// <summary>Test hook: simulate the mouse hovering cell (x, y) on the board.</summary>
@@ -895,15 +914,18 @@ public partial class Level01 : Control
 
     // --- Equipment + items -------------------------------------------------
 
-    // Give every combatant basic head/body gear and a randomly rolled weapon
-    // (50/50 pistol or rifle). Party members also start with BioStims.
+    // Give every combatant basic head/body gear, a randomly rolled ranged
+    // weapon (50/50 pistol or rifle) AND a randomly rolled melee weapon
+    // (50/50 knife 3 dmg or katana 5 dmg). Party members also start with
+    // BioStims.
     private void AssignStartingGear()
     {
         for (int i = 0; i < Roster.Length; i++)
         {
             var c = Roster[i];
             var weapon = _rng.Next(2) == 0 ? Weapon.Pistol : Weapon.Rifle;
-            c.Equipment = new Equipment(HeadGear, BodyGear, weapon);
+            var melee = _rng.Next(2) == 0 ? Weapon.Katana : Weapon.Knife;
+            c.Equipment = new Equipment(HeadGear, BodyGear, weapon, melee);
             if (!c.IsEnemy)
                 c.Items[Item.BioStim] = PartyBioStims;
         }
@@ -914,6 +936,13 @@ public partial class Level01 : Control
     {
         int index = IndexOf(name);
         return index < 0 ? "" : Roster[index].Equipment.Weapon.Name;
+    }
+
+    /// <summary>The named combatant's equipped melee weapon name ("" if unknown).</summary>
+    public string GetMeleeWeaponName(string name)
+    {
+        int index = IndexOf(name);
+        return index < 0 ? "" : Roster[index].Equipment.MeleeWeapon.Name;
     }
 
     /// <summary>The named combatant's weapon range in squares.</summary>
@@ -930,16 +959,41 @@ public partial class Level01 : Control
         return index < 0 ? 0 : Roster[index].Equipment.Weapon.Damage;
     }
 
+    /// <summary>The named combatant's melee weapon damage per hit.</summary>
+    public int GetMeleeWeaponDamage(string name)
+    {
+        int index = IndexOf(name);
+        return index < 0 ? 0 : Roster[index].Equipment.MeleeWeapon.Damage;
+    }
+
     /// <summary>Test hook: swap a combatant's weapon (recomputes if they are active).</summary>
     public void SetWeapon(string name, bool rifle)
     {
         int index = IndexOf(name);
         if (index < 0)
             return;
-        Roster[index].Equipment = new Equipment(HeadGear, BodyGear, rifle ? Weapon.Rifle : Weapon.Pistol);
+        var c = Roster[index];
+        c.Equipment = new Equipment(HeadGear, BodyGear, rifle ? Weapon.Rifle : Weapon.Pistol, c.Equipment.MeleeWeapon);
         if (index == _turns.CurrentIndex)
         {
             ComputeShootTargets();
+            ComputeMeleeTargets();
+            RefreshHighlights();
+        }
+        UpdateActionMenu();
+    }
+
+    /// <summary>Test hook: swap a combatant's melee weapon (recomputes if they are active).</summary>
+    public void SetMeleeWeapon(string name, bool katana)
+    {
+        int index = IndexOf(name);
+        if (index < 0)
+            return;
+        var c = Roster[index];
+        c.Equipment = new Equipment(c.Equipment.Head, c.Equipment.Body, c.Equipment.Weapon, katana ? Weapon.Katana : Weapon.Knife);
+        if (index == _turns.CurrentIndex)
+        {
+            ComputeMeleeTargets();
             RefreshHighlights();
         }
         UpdateActionMenu();
@@ -1014,6 +1068,7 @@ public partial class Level01 : Control
             _tokens[i].Modulate = i == index ? Colors.White : new Color(1, 1, 1, 0.55f);
         _reachable = ComputeDistances(CurrentCell(), _turns.Current.MovementRange, index);
         ComputeShootTargets();
+        ComputeMeleeTargets();
         RefreshHighlights();
         UpdateActionMenu();
 
@@ -1099,6 +1154,8 @@ public partial class Level01 : Control
         var cell = CellFromIso(boardPos);
         if (_actionMode == ActionMode.Shoot)
             TryShootAt(cell);
+        else if (_actionMode == ActionMode.Melee)
+            TryMeleeAt(cell);
         else
             MoveTo(cell);
     }
@@ -1144,6 +1201,47 @@ public partial class Level01 : Control
             KillToken(targetIndex);
     }
 
+    // Melee: the target must stand on one of the FOUR directly adjacent
+    // squares (left, right, up, down — no diagonals) of the active
+    // combatant's CURRENT position and be alive. Deals the melee weapon's
+    // damage. Like a shot, it fires from wherever the combatant now stands.
+    private void TryMeleeAt(Vector2I cell)
+    {
+        if (_actionUsed || !_meleeTargets.Contains(cell))
+            return;
+        int targetIndex = -1;
+        for (int i = 0; i < _tokens.Count; i++)
+        {
+            if (TokenCell(i) == cell)
+            {
+                targetIndex = i;
+                break;
+            }
+        }
+        if (targetIndex < 0)
+            return;
+        var target = _turns.Combatants[targetIndex];
+        if (target.IsDead)
+            return;
+        ApplyMelee(_turns.CurrentIndex, targetIndex);
+        MarkActionUsed();
+    }
+
+    // Common melee application: melee-weapon damage on the target, HUD line,
+    // token HP update, death removal. Shared by the player's melee action and
+    // the enemy AI.
+    private void ApplyMelee(int attackerIndex, int targetIndex)
+    {
+        var attacker = _turns.Combatants[attackerIndex];
+        var target = _turns.Combatants[targetIndex];
+        int damage = attacker.Equipment.MeleeWeapon.Damage;
+        target.HitPoints -= damage;
+        _infoLabel.Text = $"{attacker.Name} strikes {target.Name} with the {attacker.Equipment.MeleeWeapon.Name} for {damage} ({target.HitPoints} HP left)";
+        RefreshTokenHp(targetIndex);
+        if (target.IsDead)
+            KillToken(targetIndex);
+    }
+
     // One action per turn: once the active combatant has moved, shot or waited,
     // board clicks are ignored and the action buttons disable (END TURN /
     // WAIT / UNDO stay available).
@@ -1162,6 +1260,7 @@ public partial class Level01 : Control
     }
 
     private void OnShootModePressed() => SetActionMode(ActionMode.Shoot);
+    private void OnMeleeModePressed() => SetActionMode(ActionMode.Melee);
     private void OnMoveModePressed() => SetActionMode(ActionMode.Move);
 
     // Switch the board-click mode. Mode switching is free: it does not
@@ -1177,10 +1276,14 @@ public partial class Level01 : Control
     {
         _tokens[index].Position = new Vector2(cell.X * TileSize, cell.Y * TileSize);
         _reachable = ComputeDistances(cell, _turns.Combatants[index].MovementRange, index);
-        // A move changes where shots are fired from: refresh the shoot-target
-        // set from the new position so a shoot-after-move aims from here.
+        // A move changes where shots/strikes are fired from: refresh the
+        // shoot- and melee-target sets from the new position so a
+        // shoot-or-melee-after-move aims from here.
         if (index == _turns.CurrentIndex)
+        {
             ComputeShootTargets();
+            ComputeMeleeTargets();
+        }
         RefreshHighlights();
     }
 
@@ -1192,9 +1295,11 @@ public partial class Level01 : Control
     {
         _tokens[_turns.CurrentIndex].Position = new Vector2(next.X * TileSize, next.Y * TileSize);
         _movedThisTurn = true;
-        // A move changes where shots are fired from: refresh the shoot-target
-        // set from the new position so a shoot-after-move aims from here.
+        // A move changes where shots/strikes are fired from: refresh the
+        // shoot- and melee-target sets from the new position so a
+        // shoot-or-melee-after-move aims from here.
         ComputeShootTargets();
+        ComputeMeleeTargets();
         RefreshHighlights();
     }
 
@@ -1203,12 +1308,15 @@ public partial class Level01 : Control
 
     // Enemy AI (same rules as the player: one action + one move per turn):
     // the enemy spends its full movement range walking the BFS path toward
-    // the nearest living party member, then shoots it — from the new
-    // position — if it ended up at weapon range with a clear line of sight.
-    // The move and the shot each latch the same per-turn budgets a player's
-    // actions use (_movedThisTurn / _actionUsed), so the actions menu shows
-    // exactly what the enemy has spent. Then its turn ends automatically.
-    // Guarded so it acts exactly once per turn.
+    // the nearest living party member, stopping inside its weapon's shooting
+    // circle, then PREFERS the ranged attack: it shoots the target — from
+    // the new position — when that is possible, and falls back to the melee
+    // weapon when the target is on a directly adjacent square (e.g. the
+    // enemy already stood in shooting range but a wall blocks the line of
+    // sight). The move and the action each latch the same per-turn budgets a
+    // player's actions use (_movedThisTurn / _actionUsed), so the actions
+    // menu shows exactly what the enemy has spent. Then its turn ends
+    // automatically. Guarded so it acts exactly once per turn.
     private void EnemyAct()
     {
         if (_enemyActed)
@@ -1325,10 +1433,12 @@ public partial class Level01 : Control
         return IsShootCell(from, cell, range) && HasLineOfSight(from, cell, range);
     }
 
-    // The enemy's action: if <targetIndex> is inside its weapon's shooting
-    // circle from the enemy's CURRENT position with a clear line of sight,
-    // shoot it (weapon damage). Latches the action budget exactly like a
-    // player's shoot.
+    // The enemy's action: it PREFERS to shoot — if <targetIndex> is inside
+    // its weapon's shooting circle from the enemy's CURRENT position with a
+    // clear line of sight, shoot it (weapon damage). When the shot is not
+    // possible but the target stands on one of the four directly adjacent
+    // squares, it falls back to the melee weapon (melee damage). Latches the
+    // action budget exactly like a player's shoot or melee.
     private void EnemyShoot(int index, int targetIndex)
     {
         var enemy = _turns.Combatants[index];
@@ -1338,6 +1448,18 @@ public partial class Level01 : Control
         if (CanShootAt(from, cell, weaponRange))
         {
             ApplyShot(index, targetIndex);
+            _actionUsed = true;
+            UpdateActionMenu();
+            return;
+        }
+        // Melee fallback: the target is on a directly adjacent square (the
+        // enemy stood in its shooting circle already, so a shot means the
+        // line of sight is blocked — a knife/katana can still swing).
+        int dx = cell.X - from.X;
+        int dy = cell.Y - from.Y;
+        if (Math.Abs(dx) + Math.Abs(dy) == 1)
+        {
+            ApplyMelee(index, targetIndex);
             _actionUsed = true;
             UpdateActionMenu();
         }
@@ -1474,6 +1596,26 @@ public partial class Level01 : Control
         }
     }
 
+    // Rebuild the melee-target set for the active combatant from its CURRENT
+    // position: the FOUR directly adjacent squares (left, right, up, down —
+    // no diagonals) that hold a live token. A melee swing always lands if the
+    // target stands there, so no line-of-sight check.
+    private void ComputeMeleeTargets()
+    {
+        _meleeTargets.Clear();
+        if (_turns.Combatants[_turns.CurrentIndex].IsEnemy)
+            return;
+        var from = CurrentCell();
+        for (int i = 0; i < _tokens.Count; i++)
+        {
+            if (_tokens[i].Visible == false)
+                continue;
+            var cell = TokenCell(i);
+            if (cell != from && Math.Abs(cell.X - from.X) + Math.Abs(cell.Y - from.Y) == 1)
+                _meleeTargets.Add(cell);
+        }
+    }
+
     private void RefreshHighlights()
     {
         // The shooting-range circle: a soft ring centered on the active
@@ -1521,12 +1663,16 @@ public partial class Level01 : Control
 
         // Move mode: green diamonds on reachable tiles. Shoot mode: red
         // diamonds on every shootable tile (in range with line of sight,
-        // from the CURRENT position; only when the active combatant has not
-        // used its action yet). The grid layer draws them.
+        // from the CURRENT position). Melee mode: orange diamonds on the
+        // four adjacent tiles holding a live token. The grid layer draws
+        // them; only one view is shown at a time.
         bool shootView = _actionMode == ActionMode.Shoot
             && !_turns.Combatants[_turns.CurrentIndex].IsEnemy;
-        _grid.Reachable = shootView ? new HashSet<Vector2I>() : _reachable.Keys;
+        bool meleeView = _actionMode == ActionMode.Melee
+            && !_turns.Combatants[_turns.CurrentIndex].IsEnemy;
+        _grid.Reachable = (shootView || meleeView) ? new HashSet<Vector2I>() : _reachable.Keys;
         _grid.Shootable = shootView ? _shootTargets : new HashSet<Vector2I>();
+        _grid.Meleeable = meleeView ? _meleeTargets : new HashSet<Vector2I>();
         RefreshGridLabels();
         _grid.Rebuild();
         // Any change that affects mode/move/turn state also changes what the
@@ -1689,14 +1835,17 @@ public partial class Level01 : Control
         var actions = new HBoxContainer { Name = "Actions" };
         actions.AddThemeConstantOverride("separation", 8);
         _shootButton = new Button { Name = "Shoot", Text = "SHOOT", CustomMinimumSize = new Vector2(84, 34) };
+        _meleeButton = new Button { Name = "Melee", Text = "MELEE", CustomMinimumSize = new Vector2(84, 34) };
         _moveButton = new Button { Name = "Move", Text = "MOVE", CustomMinimumSize = new Vector2(84, 34) };
         _waitButton = new Button { Name = "Wait", Text = "WAIT", CustomMinimumSize = new Vector2(84, 34) };
         _healButton = new Button { Name = "Heal", CustomMinimumSize = new Vector2(96, 34) };
         _shootButton.Pressed += OnShootModePressed;
+        _meleeButton.Pressed += OnMeleeModePressed;
         _moveButton.Pressed += OnMoveModePressed;
         _waitButton.Pressed += OnWaitPressed;
         _healButton.Pressed += OnHealPressed;
         actions.AddChild(_shootButton);
+        actions.AddChild(_meleeButton);
         actions.AddChild(_moveButton);
         actions.AddChild(_waitButton);
         actions.AddChild(_healButton);
@@ -1726,10 +1875,12 @@ public partial class Level01 : Control
         // disables its own buttons independently.
         bool enemyTurn = current.IsEnemy;
         _shootButton.Disabled = enemyTurn || _actionUsed;
+        _meleeButton.Disabled = enemyTurn || _actionUsed;
         _moveButton.Disabled = enemyTurn || _movedThisTurn;
         _waitButton.Disabled = enemyTurn || _actionUsed;
         _healButton.Disabled = enemyTurn || _actionUsed || stims <= 0 || current.HitPoints >= current.MaxHitPoints;
         _shootButton.Modulate = _actionMode == ActionMode.Shoot ? Colors.White : new Color(1, 1, 1, 0.55f);
+        _meleeButton.Modulate = _actionMode == ActionMode.Melee ? Colors.White : new Color(1, 1, 1, 0.55f);
         _moveButton.Modulate = _actionMode == ActionMode.Move ? Colors.White : new Color(1, 1, 1, 0.55f);
     }
 

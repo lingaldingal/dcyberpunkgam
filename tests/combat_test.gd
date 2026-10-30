@@ -106,15 +106,37 @@ func _run() -> void:
 	level.ForceCurrent("Vex")
 	await process_frame
 
-	# --- Equipment: everyone has head + body gear + a pistol/rifle. ---
-	_check(level.GetEquipment("Vex") == "Pistol · Ballistic Cap · Weave Vest",
-			"Vex equipped with basic gear + pistol (got '%s')" % level.GetEquipment("Vex"))
+	# --- Equipment: everyone has head + body gear + a pistol/rifle AND a
+	# knife/katana melee weapon. ---
+	var vex_equipment: String = level.GetEquipment("Vex")
+	var vex_melee: String = level.GetMeleeWeaponName("Vex")
+	_check(vex_melee == "Knife" or vex_melee == "Katana",
+			"Vex has a knife or katana (got '%s')" % vex_melee)
+	_check(vex_equipment == "%s · %s · Ballistic Cap · Weave Vest" % [level.GetWeaponName("Vex"), vex_melee],
+			"Vex equipped with basic gear + weapons (got '%s')" % vex_equipment)
 	for n in NAMES:
 		var w: String = level.GetWeaponName(n)
+		var mw: String = level.GetMeleeWeaponName(n)
 		_check(w == "Pistol" or w == "Rifle",
 				"%s has a pistol or rifle (got '%s')" % [n, w])
+		_check(mw == "Knife" or mw == "Katana",
+				"%s has a knife or katana (got '%s')" % [n, mw])
 		_check(level.GetEquipment(n).ends_with("· Ballistic Cap · Weave Vest"),
 				"%s has the basic head/body gear (got '%s')" % [n, level.GetEquipment(n)])
+	# Melee weapons: knife 3 dmg, katana 5 dmg.
+	level.SetMeleeWeapon("Vex", false)
+	_check(level.GetMeleeWeaponName("Vex") == "Knife", "SetMeleeWeapon swaps Vex to the knife")
+	_check(level.GetMeleeWeaponDamage("Vex") == 3, "knife does 3 damage (got %d)" % level.GetMeleeWeaponDamage("Vex"))
+	level.SetMeleeWeapon("Vex", true)
+	_check(level.GetMeleeWeaponName("Vex") == "Katana", "SetMeleeWeapon swaps Vex to the katana")
+	_check(level.GetMeleeWeaponDamage("Vex") == 5, "katana does 5 damage (got %d)" % level.GetMeleeWeaponDamage("Vex"))
+	# Pin Vex's melee weapon to the knife (3 dmg) for the melee combat checks below.
+	level.SetMeleeWeapon("Vex", false)
+	# The actions menu has a MELEE button next to SHOOT.
+	var melee_btn: Button = level.get_node("ActionMenu/VBox/Actions/Melee")
+	_check(melee_btn != null, "actions menu has a MELEE button")
+	_check(String(melee_btn.text) == "MELEE", "MELEE button label (got '%s')" % String(melee_btn.text))
+	_check(melee_btn.disabled == false, "MELEE button enabled on a fresh turn")
 	# Party members start with BioStims; enemies don't.
 	_check(level.GetItemCount("Vex") == 2, "party members start with 2 BioStims (got %d)" % level.GetItemCount("Vex"))
 	_check(level.GetItemCount("Brute") == 0, "enemies start with no BioStims")
@@ -400,6 +422,105 @@ func _run() -> void:
 	board.gui_input.emit(click_after_wait)
 	await process_frame
 	_check(level.GetHitPoints("Wisp") == 5, "WAIT consumes the action (no shot after)")
+
+	# --- Melee: one square left/right/up/down, knife 3 dmg. ---
+	# Vex (knife, 3 dmg) is adjacent to Wisp (5 HP) at (11,1).
+	const MELEE := 2  # Level01.ActionMode.Melee
+	level.SetTokenCell("Vex", 10, 1)
+	level.SetTokenCell("Wisp", 11, 1)
+	level.ForceCurrent("Vex")
+	level.SetActionMode(MELEE)
+	_check(level.GetActionMode() == MELEE, "melee mode is active")
+	_check(level.IsMeleeTarget(11, 1), "enemy 1 square east is a melee target")
+	_check(not level.IsMeleeTarget(10, 0), "adjacent cell with NO token is not a melee target")
+	_check(not level.IsMeleeTarget(11, 0), "diagonal cell is NOT a melee target")
+	_check(not level.IsMeleeTarget(10, 2), "cell 2 squares south is NOT a melee target")
+	_check(not level.IsMeleeTarget(9, 1), "cell 2 squares west is NOT a melee target")
+	_check(not level.IsMeleeTarget(10, 1), "own cell is not a melee target")
+	# Strike Wisp with the knife.
+	var click_melee := InputEventMouseButton.new()
+	click_melee.button_index = MOUSE_BUTTON_LEFT
+	click_melee.pressed = true
+	click_melee.position = level.IsoCellCenter(Vector2i(11, 1))
+	board.gui_input.emit(click_melee)
+	await process_frame
+	_check(level.GetHitPoints("Wisp") == 2, "melee strike deals 3 knife damage (got %d HP, was 5)" % level.GetHitPoints("Wisp"))
+	_check(melee_btn.disabled == true, "MELEE button disabled after the action is spent")
+	_check(level.get_node("ActionMenu/VBox/Actions/Shoot").disabled == true,
+			"SHOOT also disabled: melee and shoot share the one action")
+	_check(level.get_node("ActionMenu/VBox/Actions/Move").disabled == false,
+			"MOVE stays available: the move is a separate budget")
+	# Second click: action already used this turn -> no extra damage.
+	board.gui_input.emit(click_melee)
+	await process_frame
+	_check(level.GetHitPoints("Wisp") == 2, "second melee click does not strike again (once per turn)")
+	# A SHOOT after the melee must not fire: the action budget is shared.
+	level.SetActionMode(SHOOT)
+	_check(level.IsShootTarget(11, 1), "Wisp is inside the pistol circle (sanity)")
+	var click_shoot_after_melee := InputEventMouseButton.new()
+	click_shoot_after_melee.button_index = MOUSE_BUTTON_LEFT
+	click_shoot_after_melee.pressed = true
+	click_shoot_after_melee.position = level.IsoCellCenter(Vector2i(11, 1))
+	board.gui_input.emit(click_shoot_after_melee)
+	await process_frame
+	_check(level.GetHitPoints("Wisp") == 2, "shoot after melee does not fire (action shared, got %d HP)" % level.GetHitPoints("Wisp"))
+	# New turn: move, then the melee target set is recomputed from the new
+	# position (a melee-after-move aims from the CURRENT cell).
+	level.ForceCurrent("Vex")
+	level.SetActionMode(MOVE)
+	var click_move_melee := InputEventMouseButton.new()
+	click_move_melee.button_index = MOUSE_BUTTON_LEFT
+	click_move_melee.pressed = true
+	click_move_melee.position = level.IsoCellCenter(Vector2i(12, 1))
+	board.gui_input.emit(click_move_melee)
+	await process_frame
+	_check(level.GetTokenCell("Vex") == Vector2i(12, 1), "Vex moved to (12,1)")
+	# The target set is recomputed from the NEW position: Wisp at (11,1) is
+	# now one WEST of Vex — still a valid melee target.
+	_check(level.IsMeleeTarget(11, 1), "melee targets recomputed from the new position (Wisp west is adjacent)")
+	_check(not level.IsMeleeTarget(13, 1), "cell 1 EAST of the new position is not a target (no token there)")
+	# Katana: 5 damage in melee.
+	level.SetMeleeWeapon("Vex", true)
+	_check(level.GetMeleeWeaponDamage("Vex") == 5, "Vex now wields the katana (5 dmg)")
+	level.ForceCurrent("Vex")
+	level.SetActionMode(MELEE)
+	board.gui_input.emit(click_melee)
+	await process_frame
+	_check(level.GetHitPoints("Wisp") <= -2, "katana strike deals 5 damage (got %d HP, was 2)" % level.GetHitPoints("Wisp"))
+	level.SetMeleeWeapon("Vex", false)
+	await process_frame
+
+	# --- Enemy AI prefers to shoot, falls back to melee when in range. ---
+	# Brute (pistol + knife, pinned) stands at (25,1); Vex is ADJACENT at
+	# (25,2), inside the pistol circle, but the WALL at (24,1) blocks the line
+	# of sight — so the enemy cannot shoot and must swing the knife instead.
+	level.SetTokenCell("Vex", 25, 2)
+	level.SetTokenCell("Kaito", 0, 2)
+	level.SetTokenCell("Rook", 0, 3)
+	level.SetTokenCell("Mira", 0, 4)
+	level.SetTokenCell("Brute", 25, 1)
+	level.SetTokenCell("Slick", 26, 3)
+	level.SetTokenCell("Gutter", 25, 4)
+	level.SetWeapon("Brute", false)
+	level.SetMeleeWeapon("Brute", false)
+	level.SetInitiativeRolls([1, 1, 1, 1, 1, 1, 1, 1])
+	level.ForceCurrent("Brute")
+	for i in 24:
+		await process_frame
+	_check(level.GetTokenCell("Brute") == Vector2i(25, 1),
+			"enemy holds its position when already in range (got %s)" % str(level.GetTokenCell("Brute")))
+	_check(level.GetHitPoints("Vex") == 14,
+			"enemy melee-fallback struck adjacent Vex for knife 3 (got %d HP, want 14)" % level.GetHitPoints("Vex"))
+	# Same spot, but now Vex is 5 away on the clear row y=1: the enemy walks
+	# east into the pistol circle and SHOOTS (prefers the ranged attack over
+	# the knife it could also use).
+	level.SetTokenCell("Vex", 20, 1)
+	level.ForceCurrent("Brute")
+	for i in 24:
+		await process_frame
+	_check(level.GetHitPoints("Vex") == 12,
+			"enemy prefers to shoot over melee (pistol 2 from the walked position, got %d HP, want 12)"
+			% level.GetHitPoints("Vex"))
 
 	# --- Death: HP hits 0 (or below) -> token removed from the map, no more turns. ---
 	# Rook (party, pistol) shoots Wisp (5 HP here) to death: 3 shots, one per turn.

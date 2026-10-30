@@ -11,19 +11,19 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - `scripts/GameManager.cs` — autoload: scene flow (StartGame / StartSceneTest / QuitToMenu); exposes `Instance`
 - `scripts/MainMenu.cs` — menu buttons incl. `OnResolutionPressed()` (cycles window size); `GetResolution()` test hook
 - `scripts/Level01.cs` (turn-based iso arena logic), `scripts/SceneTest.cs`
-- `scripts/IsoGrid.cs` — Node2D in the skewed `Iso` layer: draws floor diamonds, wall extrusion, move/shoot highlights + HP readouts in LOGICAL board pixels (the skew does the iso)
+- `scripts/IsoGrid.cs` — Node2D in the skewed `Iso` layer: draws floor diamonds, wall extrusion, move (green) / shoot (red) / melee (orange) highlights + HP readouts in LOGICAL board pixels (the skew does the iso)
 - `scripts/TokenNode.cs` — Node2D per combatant under `Board/Iso`, draws a filled diamond at its cell corner; name rendered by Level01 as an unskewed Label overlay
 - `scripts/Character.cs` — combatant data (Name, Color, Agility, `IsEnemy`, `MovementRange` = 5 + Agility/2 floored, `Constitution`/`HitPoints`/`MaxHitPoints`, `Equipment`, `Items` inventory, `UseItem`/`GetItemCount`/`Heal`)
-- `scripts/Weapon.cs` — `Weapon` (Name, Range, Damage); built-ins `Pistol` (4/2) + `Rifle` (6/3)
+- `scripts/Weapon.cs` — `Weapon` (Name, Range, Damage); built-ins `Pistol` (4/2) + `Rifle` (6/3) (ranged) and `Knife` (3) + `Katana` (5) (melee, range 0)
 - `scripts/Item.cs` — `Item` (Name, HealValue); built-in `BioStim` (heal 6)
-- `scripts/Equipment.cs` — `Equipment` (Head, Body, Weapon) + `ToText()`
+- `scripts/Equipment.cs` — `Equipment` (Head, Body, Weapon (ranged), MeleeWeapon) + `ToText()`
 - `scripts/TurnSystem.cs` — round-based initiative turn order (see below)
 - `dcyberpunkgam.csproj` / `dcyberpunkgam.sln` — .NET project (Godot.NET.Sdk 4.7.2, net8.0)
 - `run.sh` — builds the C# then launches the game with the Mono Godot binary (the command the user runs to play)
 - `tests/flow_test.gd` — headless SceneTree functional test (menu → level → 8-combatant initiative → rounds → movement range → BFS reachability → **move-mode path preview** (hover route line + endpoint circle, hide cases) → **camera panning + clamping** → **mouse click-to-move** (incl. click **behind** an obstacle/character via BFS detour) → once-per-turn + UNDO → enemy auto-move + auto turn-end → back). ~79 checks.
 - `tests/cutscene_test.gd` — headless functional test (menu → SCENE TEST → name-instant/body-typewriter reveal, speaker alternation, highlight, click-to-advance, back). ~19 checks.
 - `tests/resolution_test.gd` — headless test: menu RESOLUTION button cycles 1280x720 → 1600x900 → 1920x1080 → back
-- `tests/combat_test.gd` — headless combat test (equipment + random weapon assignment, **circle-based shoot range (any direction, dx²+dy² ≤ range²) + LOS blocking by walls AND characters**, shooting-circle overlay, **weapon-based range/damage: pistol 4/2, rifle 6/3**, once-per-turn, WAIT, **enemy AI (move into shooting circle / hold + shoot)**, **BioStim heal**, death removes token + skips turns, **END TURN button in the actions menu**, action-menu screen clamping). ~100 checks.
+- `tests/combat_test.gd` — headless combat test (equipment + random ranged AND melee weapon assignment, **circle-based shoot range (any direction, dx²+dy² ≤ range²) + LOS blocking by walls AND characters**, shooting-circle overlay, **weapon-based range/damage: pistol 4/2, rifle 6/3**, **melee: 4-adjacent-squares, knife 3 / katana 5, melee+shoot share the one action, melee-after-move recompute, enemy melee fallback when LOS blocked + enemy prefers shoot**, once-per-turn, WAIT, **enemy AI (move into shooting circle / hold + shoot or melee)**, **BioStim heal**, death removes token + skips turns, **END TURN button in the actions menu**, action-menu screen clamping). ~140 checks.
 - `readme.me` — pre-existing file, untouched
 
 ## Cutscene (scene_test)
@@ -190,14 +190,17 @@ SCENE TEST button:
   Vex 11, Kaito 9, Rook 12, Mira 8. Enemies: Gutter 10, Slick 13, Brute 12,
   Wisp 7. HP readout floats above each token and updates on damage.
 - **Per-turn budget** (one action + one move, latched independently): each
-  turn a party member may perform ONE action (SHOOT / WAIT / **BIOSTIM**) AND
-  ONE move — each latches itself (`_actionUsed` for the action,
-  `_movedThisTurn` for the move) but neither blocks the other. So shoot-then-
-  move, move-then-shoot, or just one of them all work. The **actions menu**
-  (bottom-left panel: name on top, an equipment readout line, SHOOT / MOVE /
-  WAIT / BIOSTIM buttons, and an **END TURN** button on the same row; clamped
-  on screen via `ClampActionMenu()`) shows the buttons as disabled once their
-  path is spent. Mode switching is free. UNDO re-arms both paths.
+  turn a party member may perform ONE action (SHOOT / **MELEE** / WAIT /
+  **BIOSTIM**) AND ONE move — each latches itself (`_actionUsed` for the
+  action, `_movedThisTurn` for the move) but neither blocks the other. So
+  shoot-then-move, move-then-shoot, melee-then-move, or just one of them all
+  work. **SHOOT and MELEE share the one action budget** — a melee strike
+  disables the SHOOT button and vice versa (both latch `_actionUsed`). The
+  **actions menu** (bottom-left panel: name on top, an equipment readout line,
+  SHOOT / MELEE / MOVE / WAIT / BIOSTIM buttons, and an **END TURN** button on
+  the same row; clamped on screen via `ClampActionMenu()`) shows the buttons
+  as disabled once their path is spent. Mode switching is free. UNDO re-arms
+  both paths.
 - **HUD layout**: the debug/info panel (round/turn, per-char initiative,
   move-range readout, END TURN / UNDO / BACK buttons) is a `PanelContainer`
   pinned to the **top-right** corner (`Center/Panel` — `Center` is a plain
@@ -225,10 +228,27 @@ SCENE TEST button:
   `2*range*TILE`. Test hook `GetRangeCircle() -> float[4]` returns the
   **board-space** `[x, y, w, h]` (center = iso cell center, w=h=2*range*TILE)
   or `[-1,-1,-1,-1]` when hidden.
-- **Equipment** (`Equipment.cs`): head + body + weapon. Basic gear for now —
-  Ballistic Cap (head) + Weave Vest (body) + a **random** Pistol or Rifle for
-  ALL 8 combatants (assigned in `AssignStartingGear()`). `Equipment.ToText()`
-  → "Rifle · Ballistic Cap · Weave Vest" (shown in the actions menu + HUD).
+- **Melee** (`ActionMode.Melee`, `ApplyMelee`): the melee weapon hits a live
+  token standing on **one of the four directly adjacent squares** (left/right/
+  up/down, `|dx|+|dy| == 1`, **no diagonals**) — no range, no line of sight
+  (a swing always lands if the target stands next to you). Damage comes from
+  the equipped `Equipment.MeleeWeapon`. Like shoot, a melee strike may be used
+  **before or after the move**; it always aims from the **CURRENT position**
+  (`MovePartyTo`/`MoveTokenTo` call `ComputeMeleeTargets()` +
+  `RefreshHighlights()` after a move). `ComputeMeleeTargets()` rebuilds
+  `_meleeTargets` from the current cell on `SetActive` and after every move.
+  In **melee mode** the adjacent enemy tiles are drawn with **orange**
+  diamonds (the grid layer's `Meleeable` set; move=green, shoot=red,
+  melee=orange). `IsMeleeTarget(int x, int y)` is the test hook.
+  `Weapon.Knife` (dmg 3) and `Weapon.Katana` (dmg 5) are the two melee
+  weapons — **Range 0**, damage is all that matters.
+- **Equipment** (`Equipment.cs`): head + body + **two weapon slots** —
+  `Weapon` (ranged) and `MeleeWeapon` (melee). Basic gear for now —
+  Ballistic Cap (head) + Weave Vest (body) + a **random** Pistol or Rifle
+  (ranged) **AND a random Knife or Katana (melee, 50/50)** for ALL 8
+  combatants (assigned in `AssignStartingGear()`). `Equipment.ToText()`
+  → "Pistol · Knife · Ballistic Cap · Weave Vest" (shown in the actions menu
+  + HUD).
 - **Items** (`Item.cs`): consumables with a `HealValue`. `Item.BioStim`
   (heal 6) — party members start with **2** (enemies 0). Using one heals up to
   `MaxHitPoints` and consumes the action. `Character.UseItem` /
@@ -248,8 +268,11 @@ SCENE TEST button:
   inside its own weapon's shooting circle** (it moves INTO shooting range
   rather than right up next to the player; if already inside the circle it
   holds its position and doesn't move), then spends its one **action** via
-  `EnemyShoot` — from the new position it fires at that target if it is inside
-  its shooting circle with a clear line of sight. The move and shot latch
+  `EnemyShoot` — it **prefers the ranged attack**: it fires at that target
+  from the new position if it is inside its shooting circle with a clear line
+  of sight, and **falls back to the melee weapon** (`ApplyMelee`) when the
+  target stands on a directly adjacent square (e.g. the enemy was already in
+  range but a wall blocked the line of sight). The move and action latch
   `_movedThisTurn` / `_actionUsed` exactly like the player's actions, so the
   actions menu reflects the spent budgets. Auto-end turn (guarded by
   `_enemyActed`). `FindNearestPartyMember` picks the target.
@@ -257,13 +280,16 @@ SCENE TEST button:
   blocks movement (`IsOccupiedBy` skips the dead), and `TurnSystem.EndTurn`
   skips dead combatants when advancing (round wraps when everyone is dead).
 - Test hooks: `GetHitPoints(string)`, `IsAlive(string)`, `IsShootTarget(int,
-  int)`, `SetActionMode(ActionMode)`, `SetTokenCell(string, int, int)`,
-  `GetActionMenuPos()`, `ForceCurrent(string)`, `GetWeaponName(string)`,
-  `GetWeaponRange(string)`, `SetWeapon(string, bool isRifle)`,
+  int)`, `IsMeleeTarget(int, int)`, `SetActionMode(ActionMode)` (0 Move, 1
+  Shoot, 2 Melee), `SetTokenCell(string, int, int)`, `GetActionMenuPos()`,
+  `ForceCurrent(string)`, `GetWeaponName(string)`, `GetWeaponRange(string)`,
+  `SetWeapon(string, bool isRifle)`, `GetMeleeWeaponName(string)`,
+  `GetMeleeWeaponDamage(string)`, `SetMeleeWeapon(string, bool isKatana)`,
   `GetItemCount(string)`, `UseItem(string)`, `GetEquipment(string)`.
-  NOTE: set tokens' cells BEFORE `ForceCurrent` — shoot targets/move range are
-  computed from the active token's position in `SetActive()`. Tests pin
-  weapons with `SetWeapon` (and `SetInitiativeRolls`) for determinism.
+  NOTE: set tokens' cells BEFORE `ForceCurrent` — shoot/melee targets/move
+  range are computed from the active token's position in `SetActive()`. Tests
+  pin weapons with `SetWeapon` / `SetMeleeWeapon` (and `SetInitiativeRolls`)
+  for determinism.
 
 ## Resolution selector (MainMenu)
 `MainMenu` has a **RESOLUTION** button that cycles the window through three
@@ -309,7 +335,7 @@ $GODOT --headless --path . --import                    # clean import check
 $GODOT --headless --path . --quit-after 120            # smoke run (main scene = menu)
 $GODOT --headless --path . -s res://tests/flow_test.gd      # functional flow test (60 checks)
 $GODOT --headless --path . -s res://tests/cutscene_test.gd  # cutscene test (19 checks)
-$GODOT --headless --path . -s res://tests/combat_test.gd    # combat: weapons/items/enemy AI/shoot/death/actions menu (100 checks)
+$GODOT --headless --path . -s res://tests/combat_test.gd    # combat: weapons/melee/items/enemy AI/shoot/death/actions menu (140 checks)
 ```
 Headless alone is NOT enough for UI: it never renders, so off-screen controls
 are invisible to it. There's a real Xorg at `DISPLAY=:0.0` (no Xvfb/xdotool here).
