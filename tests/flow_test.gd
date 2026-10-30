@@ -353,6 +353,42 @@ func _run_flow() -> void:
 	level.ZoomBy(-1.0)
 	await process_frame
 	_check(absf(level.GetCameraScale() - 1.0) < 1e-3, "zooming out returns to 1.0")
+	# Zoom-to-cursor: the mouse wheel anchors the zoom on the CURSOR, not the
+	# viewport center — the board pixel under the cursor must stay at the same
+	# screen position while the scale changes. Zoom at a non-center screen
+	# point and verify the board point under it does not drift.
+	level.ResetCamera()
+	await process_frame
+	var cursor := Vector2(300.0, 500.0)  # deliberately off-center
+	var before_cam: Vector2 = level.GetCameraPos()
+	var before_scale: float = level.GetCameraScale()
+	var board_at_cursor: Vector2 = (cursor + before_cam) / before_scale
+	level.ZoomAt(cursor, 1.0)
+	await process_frame
+	var after_cam: Vector2 = level.GetCameraPos()
+	var after_scale: float = level.GetCameraScale()
+	var drift: Vector2 = (cursor + after_cam) / after_scale - board_at_cursor
+	_check(absf(after_scale - before_scale * 1.1) < 1e-3,
+			"ZoomAt raises the scale by one step")
+	_check(drift.length() < 0.5,
+			"zoom-to-cursor keeps the board point under the cursor fixed (drift %s)" % drift)
+	# A center-anchored zoom (ZoomBy) must keep the CENTER fixed instead.
+	level.ZoomAt(cursor, -1.0)
+	await process_frame
+	before_cam = level.GetCameraPos()
+	before_scale = level.GetCameraScale()
+	board_at_cursor = Vector2.ZERO  # placeholder, center computed below
+	var center_screen := real_vp / 2.0
+	board_at_cursor = (center_screen + before_cam) / before_scale
+	level.ZoomBy(1.0)
+	await process_frame
+	after_cam = level.GetCameraPos()
+	after_scale = level.GetCameraScale()
+	drift = (center_screen + after_cam) / after_scale - board_at_cursor
+	_check(drift.length() < 0.5,
+			"center-anchored zoom keeps the board point under the center fixed (drift %s)" % drift)
+	level.ResetCamera()
+	await process_frame
 	# The scale is clamped at the upper limit: many zoom-in notches stop at ZoomMax.
 	for i in 20:
 		level.ZoomBy(1.0)
@@ -365,20 +401,23 @@ func _run_flow() -> void:
 	await process_frame
 	_check(level.GetCameraScale() >= 0.9 - 1e-3, "zoom out clamps at the min limit")
 	_check(level.GetCameraScale() <= 0.95, "zoom out reaches the min limit")
-	# Zoom/pan interaction: the clamp's visible span is window/scale, so at
-	# the far bottom-right the board's edge is pinned to the SCREEN edge at
-	# every zoom level — every square stays reachable no matter how zoomed
-	# in. The iso bounds are x:[-512, 896] (width 1408), y:[0, 704]. The
-	# far-corner camera limit is bounds.End - window/scale, so:
-	#   zoomed in  (1.75): x = 896 - 731.4 = 164.6 / y = 704 - 411.4 = 292.6
-	#   zoomed out (0.9): x = 896 - 1422.2 = -526.2 / y = 704 - 800 = -96
-	#     (the diamond 1408x704 still EXCEEDS the view 1422x800 on height, so
-	#     it stays edge-clamped even at the minimum zoom)
+	# Zoom/pan interaction: the board is SCALED, so a board point p renders at
+	# p*scale - camera and the clamp must scale the diamond's bounds too:
+	# camera ∈ [bounds.Min*scale, bounds.Max*scale - window]. (Clamping to the
+	# UNSCALED bounds cut off the map's corners once zoomed in.) The iso
+	# bounds are x:[-512, 896] (width 1408), y:[0, 704], so:
+	#   zoomed in  (1.75): x ∈ [-896, 288] / y ∈ [0, 512]
+	#     (scaled diamond 2464x1232 EXCEEDS the 1280x720 window, so it stays
+	#     edge-clamped and the far corner pins to the screen edge)
+	#   zoomed out (0.9): x ∈ [-460.8, 126.2] / y ∈ [-89.6, 0]
+	#     (scaled diamond 1267x634 < the 1422x800 view: lo>hi, so the diamond
+	#     slides anywhere fully on-screen and the camera stays CENTERED on it
+	#     at (-460.8, 80))
 	level.ResetCamera()
 	await process_frame
-	# Fully zoomed OUT (0.9): the diamond is bigger than the view on both
-	# axes, so the board stays edge-clamped; the far/near extremes are the
-	# screen-edge positions computed above.
+	# Fully zoomed OUT (0.9): the SCALED diamond (1267x634) is smaller than
+	# the 1422x800 view on both axes, so the camera is pinned to the centered
+	# position regardless of pan direction.
 	for i in 20:
 		level.ZoomBy(-1.0)
 	await process_frame
@@ -388,11 +427,16 @@ func _run_flow() -> void:
 	level.PanCameraBy(Vector2(-1e6, -1e6))
 	await process_frame
 	var min_out: Vector2 = level.GetCameraPos()
-	_check(absf(max_out.x - (-512.0)) < 1.0 and absf(max_out.y - 0.0) < 1.0,
-			"zoomed-out far pan stops at the board's top-left (-512 / 0)")
-	_check(absf(min_out.x - (896.0 - 1280.0 / 0.9)) < 1.0
-			and absf(min_out.y - (704.0 - 720.0 / 0.9)) < 1.0,
-			"zoomed-out near pan stops at bounds.End - view (-526.2 / -96)")
+	# At 0.9 the SCALED diamond (1267x634) still fits inside the 1280x720 view,
+	# so the clamp is a small edge range where the diamond stays fully on
+	# screen: x ∈ [-473.6, -460.8], y ∈ [-86.4, 0]. Pan +∞ pins the diamond's
+	# left/top edge to the screen edge (-460.8 / 0); pan -∞ pins its right/
+	# bottom edge to the screen edge (-473.6 / -86.4).
+	_check(absf(max_out.x - (-460.8)) < 1.0 and absf(max_out.y - 0.0) < 1.0,
+			"zoomed-out +∞ pan pins the diamond's left/top edge (-460.8 / 0)")
+	_check(absf(min_out.x - (896.0 * 0.9 - 1280.0)) < 1.0
+			and absf(min_out.y - (704.0 * 0.9 - 720.0)) < 1.0,
+			"zoomed-out -∞ pan pins the diamond's right/bottom edge (-473.6 / -86.4)")
 	# Fully zoomed IN (1.75): the diamond's on-screen size (2464x1232)
 	# EXCEEDS the 1280x720 window, so the board clamps at its edges and the
 	# far (bottom-right) corner is pinned to the SCREEN edge — reachable
@@ -409,15 +453,36 @@ func _run_flow() -> void:
 	level.PanCameraBy(Vector2(-1e6, -1e6))
 	await process_frame
 	var min_in: Vector2 = level.GetCameraPos()
-	_check(absf(max_in.x - (896.0 - 1280.0 / 1.75)) < 1.0
-			and absf(max_in.y - (704.0 - 720.0 / 1.75)) < 1.0,
-			"zoomed-in far corner pinned to the screen edge (164.6 / 292.6)")
+	# With the SCALED clamp the far corner pins the scaled board's edge to the
+	# screen edge: bounds.Max*scale - window = (896*1.75 - 1280, 704*1.75 - 720)
+	# = (288, 512) — FURTHER into the board than the old unscaled clamp (165 /
+	# 293), which left the map's bottom-right corner region unpannable.
+	_check(absf(max_in.x - (896.0 * 1.75 - 1280.0)) < 1.0
+			and absf(max_in.y - (704.0 * 1.75 - 720.0)) < 1.0,
+			"zoomed-in far corner pins the SCALED edge to the screen (288 / 512)")
 	_check(max_in.x > max_out.x and max_in.y > max_out.y,
 			"zooming in extends the reachable far edge into the board")
-	# The near edge (board's top-left at the screen edge) is the board's
-	# Position, unchanged by zoom: min camera = (-512, 0) at every level.
-	_check(absf(min_in.x - (-512.0)) < 1.0 and absf(min_in.y - 0.0) < 1.0,
-			"zoomed-in near edge stays at the board's top-left")
+	# The near edge is the SCALED board left/top edge at the screen edge:
+	# bounds.Min * scale = (-896, 0). The old unscaled clamp stopped at -512,
+	# so the diamond's left corner was cut off (see the corner check below).
+	_check(absf(min_in.x - (-896.0)) < 1.0 and absf(min_in.y - 0.0) < 1.0,
+			"zoomed-in near edge reaches the SCALED board left edge (-896 / 0)")
+	# Corner reachability at max zoom: every GRID corner must be pan-able into
+	# view. Grid corners in board space: top (0,0), right (896,448), left
+	# (-512,512), bottom (192,704). A point p is visible iff camera ∈
+	# [p*scale - window, p*scale]. Intersected with the clamp range above, all
+	# four intervals are non-empty (left: [-896,-896] is the exact touch point).
+	var corners: Array = [
+		Vector2(0, 0), Vector2(896, 448), Vector2(-512, 512), Vector2(192, 704),
+	]
+	for c in corners:
+		var sc: Vector2 = c * 1.75
+		var lo := Vector2(sc.x - 1280.0, sc.y - 720.0)
+		var hi := sc
+		var ok := (
+			(maxf(minf(lo.x, hi.x), -896.0) <= minf(maxf(lo.x, hi.x), 288.0) + 1e-3)
+			and (maxf(minf(lo.y, hi.y), 0.0) <= minf(maxf(lo.y, hi.y), 512.0) + 1e-3))
+		_check(ok, "max zoom: grid corner %s is reachable in the viewport" % c)
 	# Reset restores the default (no zoom) centered view.
 	level.ResetCamera()
 	await process_frame
