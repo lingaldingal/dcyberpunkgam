@@ -112,7 +112,7 @@ public partial class Level01 : Control
     private const string BodyGear = "Weave Vest";
     private const int PartyBioStims = 2;
 
-    public enum ActionMode { Move, Shoot, Melee }
+    public enum ActionMode { Move, Shoot, Melee, Grenade }
 
     private static readonly Vector2I[] Dirs =
     {
@@ -192,6 +192,9 @@ public partial class Level01 : Control
     // Cells the active party member can hit with the melee weapon: the four
     // directly adjacent squares (left, right, up, down) holding a live token.
     private HashSet<Vector2I> _meleeTargets = new();
+    // Cells the active party member can throw a grenade to (throw range, any
+    // walkable cell within the grenade's ThrowRange of the current cell).
+    private HashSet<Vector2I> _grenadeTargets = new();
 
     // Per-turn budget: ONE action (shoot / wait / item) and ONE move. Mode
     // switching is free; using either budget latches it until END TURN.
@@ -215,8 +218,16 @@ public partial class Level01 : Control
     private Button _meleeButton = null!;
     private Button _moveButton = null!;
     private Button _waitButton = null!;
-    private Button _healButton = null!;
+    private Button _itemsButton = null!;
+    private Button _bioStimButton = null!;
+    private Button _grenadeButton = null!;
     private Button _endTurnMenuButton = null!;
+    // The ITEMS select list: a panel of one button per usable item the active
+    // combatant carries (BioStim / Grenade), shown when ITEMS is pressed.
+    private PanelContainer _itemsMenu = null!;
+    private readonly List<Button> _itemButtons = new();
+    // True while the items select list is open (clicking elsewhere closes it).
+    private bool _itemsMenuOpen;
 
     // Enemy auto-move: armed when an enemy is active; fires after a short delay.
     private bool _enemyMoveArmed;
@@ -590,10 +601,14 @@ public partial class Level01 : Control
         // tile off once zoomed (see the zoom test / _zoom_probe).
         float scale = _cameraScale > 0 ? _cameraScale : 1f;
         var local = (me.Position - _board.GetGlobalPosition()) / scale;
-        // A click landing on the action menu is for its buttons, not the board
-        // (the menu overlaps the diamond's bottom-left corner).
+        // A click landing on the action menu (or its items select list) is for
+        // its buttons, not the board (the menu overlaps the diamond's
+        // bottom-left corner). A click anywhere else closes the items list.
         if (_actionMenu != null && _actionMenu.GetRect().HasPoint(me.Position))
             return;
+        if (_itemsMenu != null && _itemsMenu.GetRect().HasPoint(me.Position))
+            return;
+        CloseItemsMenu();
         me.Position = local;
         OnBoardGuiInput(me);
     }
@@ -932,8 +947,8 @@ public partial class Level01 : Control
 
     // Give every combatant basic head/body gear, a randomly rolled ranged
     // weapon (50/50 pistol or rifle) AND a randomly rolled melee weapon
-    // (50/50 knife 3 dmg or katana 5 dmg). Party members also start with
-    // BioStims.
+    // (50/50 knife 3 dmg or katana 5 dmg). Every combatant also starts with
+    // one grenade; party members additionally start with BioStims.
     private void AssignStartingGear()
     {
         for (int i = 0; i < Roster.Length; i++)
@@ -942,6 +957,7 @@ public partial class Level01 : Control
             var weapon = _rng.Next(2) == 0 ? Weapon.Pistol : Weapon.Rifle;
             var melee = _rng.Next(2) == 0 ? Weapon.Katana : Weapon.Knife;
             c.Equipment = new Equipment(HeadGear, BodyGear, weapon, melee);
+            c.Items[Item.Grenade] = 1;
             if (!c.IsEnemy)
                 c.Items[Item.BioStim] = PartyBioStims;
         }
@@ -1030,6 +1046,19 @@ public partial class Level01 : Control
     }
 
     /// <summary>
+    /// Test hook: how many of the named item ("BioStim" / "Grenade") the
+    /// named combatant is carrying.
+    /// </summary>
+    public int GetItemCount(string name, string itemName)
+    {
+        int index = IndexOf(name);
+        if (index < 0)
+            return 0;
+        var item = ResolveItem(itemName);
+        return item == null ? 0 : Roster[index].GetItemCount(item);
+    }
+
+    /// <summary>
     /// Test hook: use one BioStim for the named combatant (heal + decrement),
     /// regardless of whose turn it is. Returns false if none were available.
     /// </summary>
@@ -1048,9 +1077,75 @@ public partial class Level01 : Control
         return false;
     }
 
-    // The active party member spends its action using a BioStim (if it has one
+    /// <summary>Test hook: is the named cell a valid grenade throw target?</summary>
+    public bool IsGrenadeTarget(int x, int y) => _grenadeTargets.Contains(new Vector2I(x, y));
+
+    /// <summary>
+    /// Test hook: detonate the active combatant's grenade on cell (x, y)
+    /// (must be a valid throw target). Returns false if the throw was
+    /// invalid or the action was already spent.
+    /// </summary>
+    public bool UseGrenade(int x, int y)
+    {
+        if (_actionUsed || !_turnActive || _turns.Current.IsEnemy)
+            return false;
+        if (!_grenadeTargets.Contains(new Vector2I(x, y)))
+            return false;
+        ApplyGrenade(_turns.CurrentIndex, new Vector2I(x, y));
+        MarkActionUsed();
+        return true;
+    }
+
+    /// <summary>Test hook: whether the items select list is currently open.</summary>
+    public bool GetItemsMenuOpen() => _itemsMenuOpen;
+
+    /// <summary>Test hook: open or close the items select list directly.</summary>
+    public void SetItemsMenuOpen(bool open)
+    {
+        _itemsMenuOpen = open;
+        if (_itemsMenu != null)
+            _itemsMenu.Visible = open;
+    }
+
+    /// <summary>Test hook: force the active combatant's grenade throw mode.</summary>
+    public void ForceGrenadeMode() => OnGrenadePressed();
+
+    private static Item? ResolveItem(string itemName) => itemName switch
+    {
+        "BioStim" => Item.BioStim,
+        "Grenade" => Item.Grenade,
+        _ => null,
+    };
+
+    // --- Items (BioStim / Grenade) -----------------------------------------
+    // The active party member's one action can be spent on an item. The ITEMS
+    // button opens a select list (one entry per usable item); picking BioStim
+    // heals, picking Grenade enters grenade-throw mode (aim, then click a
+    // target cell). Both cost the action for the turn (like shoot/melee/wait).
+
+    // Toggle the items select list open/closed.
+    private void OnItemsPressed()
+    {
+        if (!_turnActive || _turns.Current.IsEnemy)
+            return;
+        _itemsMenuOpen = !_itemsMenuOpen;
+        _itemsMenu.Visible = _itemsMenuOpen;
+        UpdateActionMenu();
+    }
+
+    // Close the items select list (called when the pointer clicks elsewhere).
+    private void CloseItemsMenu()
+    {
+        if (!_itemsMenuOpen)
+            return;
+        _itemsMenuOpen = false;
+        _itemsMenu.Visible = false;
+        UpdateActionMenu();
+    }
+
+    // The active party member spends its action on a BioStim (if it has one
     // and is below full HP).
-    private void OnHealPressed()
+    private void OnBioStimPressed()
     {
         if (!_turnActive || _turns.Current.IsEnemy || _actionUsed)
             return;
@@ -1060,6 +1155,86 @@ public partial class Level01 : Control
             _infoLabel.Text = $"{c.Name} uses a BioStim and recovers {Item.BioStim.HealValue} HP ({c.HitPoints} HP)";
             RefreshTokenHp(_turns.CurrentIndex);
             MarkActionUsed();
+            CloseItemsMenu();
+        }
+    }
+
+    // The active party member spends its action throwing a grenade: it enters
+    // grenade mode (yellow throw-target highlights), then a board click on a
+    // highlighted cell detonates it there.
+    private void OnGrenadePressed()
+    {
+        if (!_turnActive || _turns.Current.IsEnemy || _actionUsed)
+            return;
+        if (_turns.Current.GetItemCount(Item.Grenade) <= 0)
+            return;
+        CloseItemsMenu();
+        SetActionMode(ActionMode.Grenade);
+    }
+
+    // A board click in grenade mode: detonate the grenade on the clicked cell
+    // (must be a valid throw target).
+    private void TryThrowGrenade(Vector2I cell)
+    {
+        if (_actionUsed || !_grenadeTargets.Contains(cell))
+            return;
+        ApplyGrenade(_turns.CurrentIndex, cell);
+        MarkActionUsed();
+    }
+
+    // Common grenade application: the thrower consumes a grenade, then every
+    // live combatant standing on the blast cells (the landing cell + its four
+    // orthogonal neighbours) takes the grenade's blast damage. Shared by the
+    // player's throw action and the enemy AI.
+    private void ApplyGrenade(int throwerIndex, Vector2I cell)
+    {
+        var thrower = _turns.Combatants[throwerIndex];
+        if (!thrower.ConsumeItem(Item.Grenade))
+            return;
+        var blast = new List<Vector2I> { cell };
+        foreach (var dir in Dirs)
+            blast.Add(cell + dir);
+        var hits = new List<string>();
+        for (int i = 0; i < _tokens.Count; i++)
+        {
+            var victim = _turns.Combatants[i];
+            if (victim.IsDead)
+                continue;
+            if (!blast.Contains(TokenCell(i)))
+                continue;
+            victim.HitPoints -= Item.Grenade.BlastDamage;
+            hits.Add(victim.Name);
+            RefreshTokenHp(i);
+            if (victim.IsDead)
+                KillToken(i);
+        }
+        _infoLabel.Text = hits.Count == 0
+            ? $"{thrower.Name} throws a Grenade; it hits nothing."
+            : $"{thrower.Name} throws a Grenade on {cell.X},{cell.Y} for {Item.Grenade.BlastDamage} dmg — {string.Join(", ", hits)}";
+    }
+
+    // Rebuild the grenade throw-target set for the active combatant from its
+    // CURRENT position: every walkable cell within the grenade's ThrowRange
+    // (Chebyshev distance, so it's a square of side 2*ThrowRange+1 centered on
+    // the thrower — "throw up to N squares away in any direction").
+    private void ComputeGrenadeTargets()
+    {
+        _grenadeTargets.Clear();
+        if (_turns.Combatants[_turns.CurrentIndex].IsEnemy)
+            return;
+        int range = Item.Grenade.ThrowRange;
+        var from = CurrentCell();
+        for (int dy = -range; dy <= range; dy++)
+        {
+            for (int dx = -range; dx <= range; dx++)
+            {
+                var cell = new Vector2I(from.X + dx, from.Y + dy);
+                if (cell.X < 0 || cell.X >= GridWidth || cell.Y < 0 || cell.Y >= GridHeight)
+                    continue;
+                if (Walkable[cell.Y, cell.X] != 1)
+                    continue;
+                _grenadeTargets.Add(cell);
+            }
         }
     }
 
@@ -1085,6 +1260,7 @@ public partial class Level01 : Control
         _reachable = ComputeDistances(CurrentCell(), _turns.Current.MovementRange, index);
         ComputeShootTargets();
         ComputeMeleeTargets();
+        ComputeGrenadeTargets();
         RefreshHighlights();
         UpdateActionMenu();
 
@@ -1172,6 +1348,8 @@ public partial class Level01 : Control
             TryShootAt(cell);
         else if (_actionMode == ActionMode.Melee)
             TryMeleeAt(cell);
+        else if (_actionMode == ActionMode.Grenade)
+            TryThrowGrenade(cell);
         else
             MoveTo(cell);
     }
@@ -1293,12 +1471,13 @@ public partial class Level01 : Control
         _tokens[index].Position = new Vector2(cell.X * TileSize, cell.Y * TileSize);
         _reachable = ComputeDistances(cell, _turns.Combatants[index].MovementRange, index);
         // A move changes where shots/strikes are fired from: refresh the
-        // shoot- and melee-target sets from the new position so a
-        // shoot-or-melee-after-move aims from here.
+        // shoot-, melee-, and grenade-target sets from the new position so a
+        // shoot/melee/grenade-after-move aims from here.
         if (index == _turns.CurrentIndex)
         {
             ComputeShootTargets();
             ComputeMeleeTargets();
+            ComputeGrenadeTargets();
         }
         RefreshHighlights();
     }
@@ -1312,10 +1491,11 @@ public partial class Level01 : Control
         _tokens[_turns.CurrentIndex].Position = new Vector2(next.X * TileSize, next.Y * TileSize);
         _movedThisTurn = true;
         // A move changes where shots/strikes are fired from: refresh the
-        // shoot- and melee-target sets from the new position so a
-        // shoot-or-melee-after-move aims from here.
+        // shoot-, melee-, and grenade-target sets from the new position so a
+        // shoot/melee/grenade-after-move aims from here.
         ComputeShootTargets();
         ComputeMeleeTargets();
+        ComputeGrenadeTargets();
         RefreshHighlights();
     }
 
@@ -1680,15 +1860,31 @@ public partial class Level01 : Control
         // Move mode: green diamonds on reachable tiles. Shoot mode: red
         // diamonds on every shootable tile (in range with line of sight,
         // from the CURRENT position). Melee mode: orange diamonds on the
-        // four adjacent tiles holding a live token. The grid layer draws
-        // them; only one view is shown at a time.
+        // four adjacent tiles holding a live token. Grenade mode: yellow
+        // diamonds on every throwable tile (within throw range of the
+        // CURRENT position). The grid layer draws them; only one view is
+        // shown at a time.
         bool shootView = _actionMode == ActionMode.Shoot
             && !_turns.Combatants[_turns.CurrentIndex].IsEnemy;
         bool meleeView = _actionMode == ActionMode.Melee
             && !_turns.Combatants[_turns.CurrentIndex].IsEnemy;
-        _grid.Reachable = (shootView || meleeView) ? new HashSet<Vector2I>() : _reachable.Keys;
+        bool grenadeView = _actionMode == ActionMode.Grenade
+            && !_turns.Combatants[_turns.CurrentIndex].IsEnemy;
+        _grid.Reachable = (shootView || meleeView || grenadeView) ? new HashSet<Vector2I>() : _reachable.Keys;
         _grid.Shootable = shootView ? _shootTargets : new HashSet<Vector2I>();
         _grid.Meleeable = meleeView ? _meleeTargets : new HashSet<Vector2I>();
+        _grid.Grenadeable = grenadeView ? _grenadeTargets : new HashSet<Vector2I>();
+        // While aiming a grenade, show the cross-shaped blast area (the
+        // hovered cell + its four orthogonal neighbours) as a brighter
+        // preview; empty otherwise.
+        var blastPreview = new HashSet<Vector2I>();
+        if (grenadeView && _hoverCell != null && _grenadeTargets.Contains(_hoverCell.Value))
+        {
+            blastPreview.Add(_hoverCell.Value);
+            foreach (var dir in Dirs)
+                blastPreview.Add(_hoverCell.Value + dir);
+        }
+        _grid.BlastCells = blastPreview;
         RefreshGridLabels();
         _grid.Rebuild();
         // Any change that affects mode/move/turn state also changes what the
@@ -1854,18 +2050,55 @@ public partial class Level01 : Control
         _meleeButton = new Button { Name = "Melee", Text = "MELEE", CustomMinimumSize = new Vector2(84, 34) };
         _moveButton = new Button { Name = "Move", Text = "MOVE", CustomMinimumSize = new Vector2(84, 34) };
         _waitButton = new Button { Name = "Wait", Text = "WAIT", CustomMinimumSize = new Vector2(84, 34) };
-        _healButton = new Button { Name = "Heal", CustomMinimumSize = new Vector2(96, 34) };
+        _itemsButton = new Button { Name = "Items", Text = "ITEMS", CustomMinimumSize = new Vector2(84, 34) };
         _shootButton.Pressed += OnShootModePressed;
         _meleeButton.Pressed += OnMeleeModePressed;
         _moveButton.Pressed += OnMoveModePressed;
         _waitButton.Pressed += OnWaitPressed;
-        _healButton.Pressed += OnHealPressed;
+        _itemsButton.Pressed += OnItemsPressed;
         actions.AddChild(_shootButton);
         actions.AddChild(_meleeButton);
         actions.AddChild(_moveButton);
         actions.AddChild(_waitButton);
-        actions.AddChild(_healButton);
+        actions.AddChild(_itemsButton);
         vbox.AddChild(actions);
+        // The ITEMS select list: one button per usable item the active
+        // combatant carries (BioStim / Grenade). Hidden until ITEMS is pressed.
+        _itemsMenu = new PanelContainer
+        {
+            Name = "ItemsMenu",
+            Visible = false,
+            MouseFilter = MouseFilterEnum.Pass,
+        };
+        _itemsMenu.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+        {
+            BgColor = new Color(0.10f, 0.11f, 0.15f, 0.95f),
+            BorderColor = new Color(0.95f, 0.9f, 0.3f, 0.8f),
+            BorderWidthLeft = 1,
+            BorderWidthTop = 1,
+            BorderWidthRight = 1,
+            BorderWidthBottom = 1,
+            CornerRadiusTopLeft = 6,
+            CornerRadiusTopRight = 6,
+            CornerRadiusBottomLeft = 6,
+            CornerRadiusBottomRight = 6,
+            ContentMarginLeft = 8,
+            ContentMarginTop = 8,
+            ContentMarginRight = 8,
+            ContentMarginBottom = 8,
+        });
+        var itemsVbox = new VBoxContainer { Name = "ItemsVBox" };
+        itemsVbox.AddThemeConstantOverride("separation", 6);
+        _bioStimButton = new Button { Name = "BioStim", Text = "BIOSTIM x0", CustomMinimumSize = new Vector2(160, 30) };
+        _grenadeButton = new Button { Name = "Grenade", Text = "GRENADE x0", CustomMinimumSize = new Vector2(160, 30) };
+        _bioStimButton.Pressed += OnBioStimPressed;
+        _grenadeButton.Pressed += OnGrenadePressed;
+        _itemButtons.Add(_bioStimButton);
+        _itemButtons.Add(_grenadeButton);
+        itemsVbox.AddChild(_bioStimButton);
+        itemsVbox.AddChild(_grenadeButton);
+        _itemsMenu.AddChild(itemsVbox);
+        vbox.AddChild(_itemsMenu);
         // Second row: END TURN, so the turn can be closed without reaching for
         // the top-right debug panel.
         var turnRow = new HBoxContainer { Name = "TurnRow" };
@@ -1886,18 +2119,26 @@ public partial class Level01 : Control
         _actionMenuName.Text = current.Name;
         _actionMenuEquip.Text = current.Equipment.ToText();
         int stims = current.GetItemCount(Item.BioStim);
-        _healButton.Text = $"BIOSTIM x{stims}";
-        // One action (shoot/wait/item) and one move per turn; each budget
-        // disables its own buttons independently.
+        int nades = current.GetItemCount(Item.Grenade);
+        _bioStimButton.Text = $"BIOSTIM x{stims}";
+        _grenadeButton.Text = $"GRENADE x{nades}";
+        // One action (shoot/melee/wait/item) and one move per turn; each
+        // budget disables its own buttons independently.
         bool enemyTurn = current.IsEnemy;
         _shootButton.Disabled = enemyTurn || _actionUsed;
         _meleeButton.Disabled = enemyTurn || _actionUsed;
         _moveButton.Disabled = enemyTurn || _movedThisTurn;
         _waitButton.Disabled = enemyTurn || _actionUsed;
-        _healButton.Disabled = enemyTurn || _actionUsed || stims <= 0 || current.HitPoints >= current.MaxHitPoints;
+        // ITEMS is disabled once the action is spent (or on enemy turns); it
+        // can still be opened to look at the list before spending the action.
+        _itemsButton.Disabled = enemyTurn || _actionUsed;
+        _bioStimButton.Disabled = _actionUsed || stims <= 0 || current.HitPoints >= current.MaxHitPoints;
+        _grenadeButton.Disabled = _actionUsed || nades <= 0;
+        _itemsMenu.Visible = _itemsMenuOpen && !enemyTurn;
         _shootButton.Modulate = _actionMode == ActionMode.Shoot ? Colors.White : new Color(1, 1, 1, 0.55f);
         _meleeButton.Modulate = _actionMode == ActionMode.Melee ? Colors.White : new Color(1, 1, 1, 0.55f);
         _moveButton.Modulate = _actionMode == ActionMode.Move ? Colors.White : new Color(1, 1, 1, 0.55f);
+        _itemsButton.Modulate = _actionMode == ActionMode.Grenade ? Colors.White : new Color(1, 1, 1, 0.55f);
     }
 
     // Keep the menu on screen at all times: it hugs the bottom-left corner

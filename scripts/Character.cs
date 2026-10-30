@@ -49,6 +49,17 @@ public class Character
         if (IsDead || HitPoints >= MaxHitPoints || GetItemCount(item) <= 0)
             return false;
         HitPoints = System.Math.Min(MaxHitPoints, HitPoints + item.HealValue);
+        return ConsumeItem(item);
+    }
+
+    /// <summary>
+    /// Consume one copy of <paramref name="item"/> (decrements the count)
+    /// without applying any effect. Returns false if none are carried.
+    /// </summary>
+    public bool ConsumeItem(Item item)
+    {
+        if (IsDead || GetItemCount(item) <= 0)
+            return false;
         Items[item] = GetItemCount(item) - 1;
         if (Items[item] <= 0)
             Items.Remove(item);
