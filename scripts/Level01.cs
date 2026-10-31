@@ -250,7 +250,8 @@ public partial class Level01 : Control
     // Top-left pixel of the viewport within the board (see camera section).
     private Vector2 _cameraPos;
     // Uniform board scale (1.0 = default). Zooming scales the WHOLE board
-    // (iso layer + name labels) around the viewport center — see ZoomBoard.
+    // (iso layer + name labels) anchored on the cursor (mouse wheel) —
+    // see ZoomBoard.
     private float _cameraScale = 1f;
     // Test hook: when non-None, UpdateCamera pans as if this key were held.
     private Key _forcedPanKey;
@@ -468,13 +469,19 @@ public partial class Level01 : Control
         // at max zoom (1.75) the bottom-right ~30% of the board was
         // unpannable.)
         float scale = _cameraScale > 0 ? _cameraScale : 1f;
-        float viewW = (Size.X > 0 ? Size.X : 1) / scale;
-        float viewH = (Size.Y > 0 ? Size.Y : 1) / scale;
 
-        float loX = _isoBounds.End.X - viewW;   // board's right edge at screen right
-        float hiX = _isoBounds.Position.X;      // board's left edge at screen left
-        float loY = _isoBounds.End.Y - viewH;   // board's bottom edge at screen bottom
-        float hiY = _isoBounds.Position.Y;      // board's top edge at screen top
+        // The board's on-screen extent is SCALED: a board point p renders at
+        // p * scale - camera, so the board's on-screen left/top edge is at
+        // bounds.Min * scale and its right/bottom edge at bounds.Max * scale.
+        // The clamp bounds must therefore be scaled too — clamping to the
+        // UNSCALED diamond (the old code) cut off the map's corners once
+        // zoomed in: e.g. at scale 1.75 the diamond's left vertex (-512, 512)
+        // needed camera.x ≤ -896 to be visible but the clamp only allowed
+        // -512, so the whole left/bottom/right corner region was unpannable.
+        float loX = _isoBounds.End.X * scale - Size.X;   // right edge at screen right
+        float hiX = _isoBounds.Position.X * scale;       // left edge at screen left
+        float loY = _isoBounds.End.Y * scale - Size.Y;   // bottom edge at screen bottom
+        float hiY = _isoBounds.Position.Y * scale;       // top edge at screen top
 
         _cameraPos = new Vector2(
             Mathf.Clamp(_cameraPos.X, Mathf.Min(loX, hiX), Mathf.Max(loX, hiX)),
@@ -603,7 +610,8 @@ public partial class Level01 : Control
             && (wheel.ButtonIndex == MouseButton.WheelUp
                 || wheel.ButtonIndex == MouseButton.WheelDown))
         {
-            ZoomBoard(wheel.ButtonIndex == MouseButton.WheelUp ? 1f : -1f);
+            // Zoom-to-cursor: anchor on the mouse position, not the center.
+            ZoomBoard(wheel.ButtonIndex == MouseButton.WheelUp ? 1f : -1f, me.Position);
             return;
         }
         // The board is scaled by _cameraScale (mouse-wheel zoom), so a
@@ -625,14 +633,18 @@ public partial class Level01 : Control
         OnBoardGuiInput(me);
     }
 
-    // Zoom the board in (dir > 0) or out (dir < 0) by one step, anchored on the
-    // VIEWPORT CENTER so the point under the screen center stays put while the
-    // scale changes (the standard, stable zoom-to-point behavior). The board
-    // is scaled uniformly around its (0,0) origin, so after scaling the board's
-    // on-screen center shifts by (scale - 1) * center; nudging the camera by
-    // the same amount keeps that point fixed. The camera is then clamped to the
-    // new (scaled) view, so panning stays valid at every zoom level.
-    private void ZoomBoard(float dir)
+    // Zoom the board in (dir > 0) or out (dir < 0) by one step, anchored on
+    // the given SCREEN point (default: the viewport center, but mouse-wheel
+    // zooms pass the cursor) so the board point under that screen pixel stays
+    // put while the scale changes (zoom-to-cursor). A board pixel p renders
+    // at screen = p * scale - camera, i.e. the board point under screen point
+    // s is p = (s + camera) / scale. To keep p fixed while the scale goes
+    // old -> next, the camera must become cam' = (s + cam) * (next/old) - s.
+    // (A plain cam += (next - old) * s is only right when cam is 0 — the
+    // camera is normally offset from the board origin, which is why the
+    // anchored point used to drift.) The camera is then clamped to the new
+    // (scaled) view, so panning stays valid at every zoom level.
+    private void ZoomBoard(float dir, Vector2? anchor = null)
     {
         if (_board == null || Size.X <= 0 || Size.Y <= 0)
             return;
@@ -640,8 +652,9 @@ public partial class Level01 : Control
         float next = Mathf.Clamp(old * Mathf.Pow(ZoomStep, dir), ZoomMin, ZoomMax);
         if (Mathf.Abs(next - old) < 1e-5f)
             return;
-        var center = new Vector2(Size.X / 2f, Size.Y / 2f);
-        _cameraPos += (next - old) * center;
+        var at = anchor ?? new Vector2(Size.X / 2f, Size.Y / 2f);
+        float ratio = next / old;
+        _cameraPos = _cameraPos * ratio + at * (ratio - 1f);
         _cameraScale = next;
         ApplyCamera();
     }
@@ -861,6 +874,12 @@ public partial class Level01 : Control
     /// without a real wheel event.
     /// </summary>
     public void ZoomBy(float dir) => ZoomBoard(dir);
+
+    /// <summary>
+    /// Test hook: zoom by one step anchored on an arbitrary SCREEN point
+    /// (zoom-to-cursor), as the mouse wheel does with the cursor there.
+    /// </summary>
+    public void ZoomAt(Vector2 screenPos, float dir) => ZoomBoard(dir, screenPos);
 
     /// <summary>
     /// Test hook: make <paramref name="key"/> behave as held for the next
