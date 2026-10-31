@@ -11,7 +11,7 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - `scripts/GameManager.cs` — autoload: scene flow (StartGame / StartSceneTest / QuitToMenu); exposes `Instance`
 - `scripts/MainMenu.cs` — menu buttons incl. `OnResolutionPressed()` (cycles window size); `GetResolution()` test hook
 - `scripts/Level01.cs` (turn-based iso arena logic), `scripts/SceneTest.cs`
-- `scripts/IsoGrid.cs` — Node2D in the skewed `Iso` layer: draws floor diamonds, wall extrusion, move (green) / shoot (red) / melee (orange) highlights + HP readouts in LOGICAL board pixels (the skew does the iso)
+- `scripts/IsoGrid.cs` — Node2D in the skewed `Iso` layer: draws floor diamonds, wall extrusion, move (green) / shoot range (yellow) / hovered shoot target (red) / melee (orange) highlights + HP readouts in LOGICAL board pixels (the skew does the iso)
 - `scripts/TokenNode.cs` — Node2D per combatant under `Board/Iso`, draws a filled diamond at its cell corner; name rendered by Level01 as an unskewed Label overlay
 - `scripts/Character.cs` — combatant data (Name, Color, Agility, `IsEnemy`, `MovementRange` = 5 + Agility/2 floored, `Constitution`/`HitPoints`/`MaxHitPoints`, `Equipment`, `Items` inventory, `UseItem`/`GetItemCount`/`Heal`)
 - `scripts/Weapon.cs` — `Weapon` (Name, Range, Damage); built-ins `Pistol` (4/2) + `Rifle` (6/3) (ranged) and `Knife` (3) + `Katana` (5) (melee, range 0)
@@ -262,8 +262,8 @@ SCENE TEST button:
   `RefreshHighlights()` after a move). `ComputeMeleeTargets()` rebuilds
   `_meleeTargets` from the current cell on `SetActive` and after every move.
   In **melee mode** the adjacent enemy tiles are drawn with **orange**
-  diamonds (the grid layer's `Meleeable` set; move=green, shoot=red,
-  melee=orange). `IsMeleeTarget(int x, int y)` is the test hook.
+  diamonds (the grid layer's `Meleeable` set; move=green, shoot=yellow,
+  hovered shoot target=red, melee=orange). `IsMeleeTarget(int x, int y)` is the test hook.
   `Weapon.Knife` (dmg 3) and `Weapon.Katana` (dmg 5) are the two melee
   weapons — **Range 0**, damage is all that matters.
 - **Equipment** (`Equipment.cs`): head + body + **two weapon slots** —

@@ -17,8 +17,10 @@ public partial class IsoGrid : Node2D
     public int[,] Map;
     // Cells the active combatant may move to (green diamonds).
     public IEnumerable<Vector2I> Reachable { get; set; } = new HashSet<Vector2I>();
-    // Cells the active combatant can shoot (red diamonds).
+    // Cells the active combatant can shoot (yellow diamonds).
     public IEnumerable<Vector2I> Shootable { get; set; } = new HashSet<Vector2I>();
+    // The hovered tile, drawn red while it is a valid shoot target.
+    public IEnumerable<Vector2I> HoverTarget { get; set; } = new HashSet<Vector2I>();
     // Cells the active combatant can hit with the melee weapon (orange diamonds):
     // the four directly adjacent squares holding a live token.
     public IEnumerable<Vector2I> Meleeable { get; set; } = new HashSet<Vector2I>();
@@ -38,7 +40,8 @@ public partial class IsoGrid : Node2D
     private static readonly Color WallSideR = new(0.12f, 0.10f, 0.17f);
     private const float WallHeight = 18f;
     private static readonly Color MoveHl = new(0.3f, 0.9f, 0.6f, 0.28f);
-    private static readonly Color ShootHl = new(0.95f, 0.35f, 0.3f, 0.38f);
+    private static readonly Color ShootHl = new(0.95f, 0.9f, 0.3f, 0.30f);
+    private static readonly Color HoverHl = new(0.95f, 0.35f, 0.3f, 0.55f);
     private static readonly Color MeleeHl = new(0.98f, 0.62f, 0.2f, 0.42f);
     private static readonly Color GrenadeHl = new(0.95f, 0.9f, 0.3f, 0.30f);
     // The blast preview is a RED cross over the 5 blast cells while aiming
@@ -119,12 +122,15 @@ public partial class IsoGrid : Node2D
             }
         }
 
-        // 2. Highlights (move = green, shoot = red, melee = orange,
-        // grenade targets = yellow, blast preview = brighter yellow).
+        // 2. Highlights (move = green, shoot range = yellow, hovered shoot
+        // target = red, melee = orange, grenade targets = yellow, blast
+        // preview = brighter yellow).
         foreach (var cell in Reachable)
             DrawColoredPolygon(Diamond(cell.X, cell.Y), MoveHl);
         foreach (var cell in Shootable)
             DrawColoredPolygon(Diamond(cell.X, cell.Y), ShootHl);
+        foreach (var cell in HoverTarget)
+            DrawColoredPolygon(Diamond(cell.X, cell.Y), HoverHl);
         foreach (var cell in Meleeable)
             DrawColoredPolygon(Diamond(cell.X, cell.Y), MeleeHl);
         foreach (var cell in Grenadeable)

@@ -693,6 +693,7 @@ public partial class Level01 : Control
         _hoverCell = cell;
         RefreshPathPreview();
         RefreshBlastPreview();
+        RefreshHoverTarget();
         _grid.Rebuild();
     }
 
@@ -701,7 +702,21 @@ public partial class Level01 : Control
         _hoverCell = null;
         RefreshPathPreview();
         RefreshBlastPreview();
+        RefreshHoverTarget();
         _grid.Rebuild();
+    }
+
+    // While aiming (shoot mode, party turn), the hovered tile is drawn red
+    // when it is a valid shoot target (in the shoot circle with clear LOS).
+    private void RefreshHoverTarget()
+    {
+        var hover = new HashSet<Vector2I>();
+        bool shootView = _actionMode == ActionMode.Shoot
+            && _turnActive
+            && !_turns.Combatants[_turns.CurrentIndex].IsEnemy;
+        if (shootView && _hoverCell != null && _shootTargets.Contains(_hoverCell.Value))
+            hover.Add(_hoverCell.Value);
+        _grid.HoverTarget = hover;
     }
 
     // (Re)build the hover path overlay from the current state. Called on every
@@ -1992,7 +2007,7 @@ public partial class Level01 : Control
             _rangeCircle = new Polygon2D
             {
                 Name = "RangeCircle",
-                // Fully transparent: the red shootable squares are the range
+                // Fully transparent: the yellow shootable tiles are the range
                 // cue now. The node still tracks its geometry so
                 // GetRangeCircle() keeps reporting the correct range box.
                 Color = new Color(0.95f, 0.45f, 0.35f, 0f),
@@ -2026,9 +2041,10 @@ public partial class Level01 : Control
             };
         }
 
-        // Move mode: green diamonds on reachable tiles. Shoot mode: red
+        // Move mode: green diamonds on reachable tiles. Shoot mode: yellow
         // diamonds on every shootable tile (in range with line of sight,
-        // from the CURRENT position). Melee mode: orange diamonds on the
+        // from the CURRENT position), with the hovered valid target in red.
+        // Melee mode: orange diamonds on the
         // four adjacent tiles holding a live token. Grenade mode: yellow
         // diamonds on every throwable tile (within throw range of the
         // CURRENT position). The grid layer draws them; only one view is
@@ -2044,6 +2060,7 @@ public partial class Level01 : Control
         _grid.Meleeable = meleeView ? _meleeTargets : new HashSet<Vector2I>();
         _grid.Grenadeable = grenadeView ? _grenadeTargets : new HashSet<Vector2I>();
         RefreshBlastPreview();
+        RefreshHoverTarget();
         RefreshGridLabels();
         _grid.Rebuild();
         // Any change that affects mode/move/turn state also changes what the
