@@ -444,6 +444,14 @@ never mix `anchors_preset` with explicit `anchor_*` values that disagree.
   test mode there's no render pass, so `GetParsedText()` returns the RAW BBCode
   (`[b][color=...]...`) instead of plain text. For tests, expose a logical
   `GetTextPlain()` built from state rather than relying on `GetParsedText()`.
+- **High-refresh (120 Hz) display froze the cutscene typewriter**: the
+  per-frame reveal increment `delta * RevealCps` is fractional, so `SceneTest`
+  must keep the shown count as a `double` (`_charsShown`) and only cast to
+  `int` when slicing the string. Storing it in an `int` truncated the fraction
+  every frame: at 60 Hz `delta*60 ≈ 1` so it was invisible, but at 120 Hz
+  `delta*60 = 0.5` and `int(x + 0.5) == x` every frame → the body text barely
+  moved (~1 char/sec), showing just the speaker name. `cutscene_test.gd` has a
+  "typewriter reveal progresses over time" check that would catch this.
 - **Mono Godot binary (this container)**: the Mono build that loads `.cs`
   scripts is `/home/bigal/Applications/GodotMono/Godot_v4.7.2-stable_mono_linux_x86_64/Godot_v4.7.2-stable_mono_linux.x86_64`.
   The bare `godot` on PATH (`/usr/local/bin/godot`) is the GDScript build and

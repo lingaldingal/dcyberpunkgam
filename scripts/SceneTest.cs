@@ -33,7 +33,10 @@ public partial class SceneTest : Control
     };
 
     private int _lineIndex;
-    private int _charsShown;
+    // Float on purpose: the per-frame reveal increment (delta * RevealCps) is
+    // fractional, and storing it in an int truncated the fraction every frame —
+    // on a 120 Hz display (delta*60 = 0.5) the typewriter then barely moved.
+    private double _charsShown;
     private bool _ended;
 
     private Control _left = null!;
@@ -74,7 +77,7 @@ public partial class SceneTest : Control
             var line = Dialogue[_lineIndex];
             if (_charsShown < line.Text.Length)
             {
-                _charsShown = (int)Mathf.Min(line.Text.Length, _charsShown + (float)delta * RevealCps);
+                _charsShown = Mathf.Min(line.Text.Length, _charsShown + delta * RevealCps);
                 UpdateText();
             }
 
@@ -147,7 +150,7 @@ public partial class SceneTest : Control
     private void UpdateText()
     {
         var line = Dialogue[_lineIndex];
-        int shown = Math.Min(_charsShown, line.Text.Length);
+        int shown = (int)Math.Min(_charsShown, line.Text.Length);
         _text.Text = SpeakerBbCode(line) + line.Text[..shown];
         _text.ScrollToLine(_text.GetLineCount() - 1);
     }
@@ -177,7 +180,7 @@ public partial class SceneTest : Control
     public string GetTextPlain()
     {
         var line = Dialogue[_lineIndex];
-        int shown = Math.Min(_charsShown, line.Text.Length);
+        int shown = (int)Math.Min(_charsShown, line.Text.Length);
         return $"{line.Speaker}: {line.Text[..shown]}";
     }
 

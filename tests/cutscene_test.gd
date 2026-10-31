@@ -43,6 +43,16 @@ func _run_cutscene() -> void:
 	plain = scene.GetTextPlain()
 	_check(plain.begins_with("Vex:"), "text starts with speaker name (got '%s')" % plain.left(12))
 	_check(plain.length() < full_line.length() + 5, "line starts partial, not fully revealed (got %d chars shown)" % (plain.length() - 5))
+	# Regression: the reveal must actually PROGRESS over frames. The old code
+	# kept the shown count in an int and truncated the fractional per-frame
+	# increment, so on high-refresh displays (delta*RevealCps < 1) it barely
+	# moved at all — the typewriter looked frozen.
+	var revealed_before: int = plain.length()
+	for i in 60:
+		await process_frame
+	var revealed_after: int = scene.GetTextPlain().length()
+	_check(revealed_after > revealed_before,
+		"typewriter reveal progresses over time (got %d -> %d chars)" % [revealed_before, revealed_after])
 	# Finish the reveal: the full line must then be present.
 	scene.SkipReveal()
 	await process_frame
