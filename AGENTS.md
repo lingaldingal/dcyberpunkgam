@@ -466,3 +466,22 @@ never mix `anchors_preset` with explicit `anchor_*` values that disagree.
 - **Rendering verification**: see the "Validation" section — real Xorg at
   `DISPLAY=:0.0`, screenshot via a NON-headless `SceneTree` script with the
   Mono binary, analyze the PNG with PIL.
+
+## Performance notes (perf pass, 2026-11-02)
+- **IsoGrid caches static floor/wall geometry** (`_floorTiles`/`_wallFaces`, built
+  once in `EnsureFloorBuilt`): `_Draw` no longer allocates ~2k arrays per redraw
+  (redraws happen on every hover/mode/turn change). Draw order & colors
+  unchanged (floor → wall side faces → wall tops → highlights → HP text).
+- **Level01 BFS is a flat int[] array** (`_bfsDist`/`_bfsQueue`, row-major,
+  -1 = unreachable) via `FillDistances`; the `Dictionary<Vector2I,int>`
+  version (`ComputeDistances`) is now a thin adapter over it (tests rely on
+  `IsReachable`/`_reachable`). All token position changes go through
+  `SetTokenPos`, which keeps the `_cells` cache in sync (`TokenCell` reads the
+  cache, no more per-lookup division). Name labels only update when a token
+  moves (`_labelsDirty`), not every frame.
+- **Enemy AI does ONE BFS** from the target for the whole approach
+  (`EnemyMoveToward` no longer re-runs BFS per step — the map is static during
+  the walk, and the enemy's own cell is in the map so distances stay valid).
+- Combat log is a fixed ring buffer (`_combatLog[6]`); blast preview reuses a
+  5-cell array (`_blastPreview`); shared `NoCells`/`DimColor` constants replace
+  per-call HashSet/Color allocations in `RefreshHighlights`/`UpdateActionMenu`.

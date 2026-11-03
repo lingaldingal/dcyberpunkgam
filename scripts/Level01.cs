@@ -180,6 +180,19 @@ public partial class Level01 : Control
     private readonly List<Node2D> _tokens = new();
     // Token name labels (unskewed Controls, children of the board).
     private readonly List<Label> _tokenLabels = new();
+    // Cached grid cell per token (kept in sync by SetTokenPos), so the BFS
+    // hot paths and the per-frame label update don't re-divide token
+    // positions every time.
+    private readonly Vector2I[] _cells = new Vector2I[Roster.Length];
+    // Name labels only move when a token does; skip the per-frame update
+    // otherwise.
+    private bool _labelsDirty = true;
+    // Dimmed token/button color (shared, avoids per-call allocation).
+    private static readonly Color DimColor = new(1f, 1f, 1f, 0.55f);
+    // Empty highlight set (shared) for inactive views.
+    private static readonly HashSet<Vector2I> NoCells = new();
+    // Reused 5-cell cross (landing cell + 4 neighbours) for the blast preview.
+    private readonly Vector2I[] _blastPreview = new Vector2I[5];
     // The shooting-range circle overlay (shoot mode, party turns only): a
     // Polygon2D in the skewed Iso layer, so it appears as an iso ellipse.
     private Polygon2D _rangeCircle = null!;
@@ -193,8 +206,11 @@ public partial class Level01 : Control
     private bool? _forcedHit;
     // The last attack's outcome, shown in the action menu ("HIT"/"MISS").
     private string _lastAttackResult = "";
-    // Rolling combat log shown in the top-right info panel (most recent last).
-    private readonly List<string> _combatLog = new();
+    // Rolling combat log shown in the top-right info panel (most recent last):
+    // a fixed ring buffer (no List growth / RemoveAt(0) shifts).
+    private readonly string[] _combatLog = new string[CombatLogMaxLines];
+    private int _combatLogHead; // index of the OLDEST line
+    private int _combatLogCount;
     private const int CombatLogMaxLines = 6;
 
     private TurnSystem _turns = null!;
@@ -364,7 +380,11 @@ public partial class Level01 : Control
         }
 
         UpdateCamera((float)delta);
-        UpdateTokenLabels();
+        if (_labelsDirty)
+        {
+            _labelsDirty = false;
+            UpdateTokenLabels();
+        }
         ClampActionMenu();
     }
 
@@ -576,11 +596,17 @@ public partial class Level01 : Control
         return new Vector2I((int)Mathf.Floor(gx), (int)Mathf.Floor(gy));
     }
 
-    // The grid cell a token currently occupies (tokens are stored in logical
-    // board space, so this is a straight division).
-    private Vector2I TokenCell(int index)
-        => new Vector2I((int)(_tokens[index].Position.X / TileSize),
-                        (int)(_tokens[index].Position.Y / TileSize));
+    // The grid cell a token currently occupies (cached — see SetTokenPos).
+    private Vector2I TokenCell(int index) => _cells[index];
+
+    // Move a token to a cell and keep the cell cache + name labels in sync.
+    // Every token position change goes through here.
+    private void SetTokenPos(int index, Vector2I cell)
+    {
+        _cells[index] = cell;
+        _tokens[index].Position = new Vector2(cell.X * TileSize, cell.Y * TileSize);
+        _labelsDirty = true;
+    }
 
     /// <summary>Test hook: treat the board's on-screen extent as w x h.</summary>
     public void SetBoardPixelSize(float w, float h)
@@ -929,7 +955,7 @@ public partial class Level01 : Control
         int index = IndexOf(name);
         if (index < 0)
             return;
-        _tokens[index].Position = new Vector2(x * TileSize, y * TileSize);
+        SetTokenPos(index, new Vector2I(x, y));
     }
 
     /// <summary>Test hook: the actions menu's position and size.</summary>
@@ -1356,7 +1382,7 @@ public partial class Level01 : Control
         // Active token glows full-bright, the rest dim (modulate also covers
         // the token's name label).
         for (int i = 0; i < _tokens.Count; i++)
-            _tokens[i].Modulate = i == index ? Colors.White : new Color(1, 1, 1, 0.55f);
+            _tokens[i].Modulate = i == index ? Colors.White : DimColor;
         _reachable = ComputeDistances(CurrentCell(), _turns.Current.MovementRange, index);
         ComputeShootTargets();
         ComputeMeleeTargets();
@@ -1387,9 +1413,15 @@ public partial class Level01 : Control
     /// </summary>
     private void LogCombat(string line)
     {
-        _combatLog.Add(line);
-        while (_combatLog.Count > CombatLogMaxLines)
-            _combatLog.RemoveAt(0);
+        int write = (_combatLogHead + _combatLogCount) % CombatLogMaxLines;
+        if (_combatLogCount == CombatLogMaxLines)
+        {
+            _combatLogHead = (_combatLogHead + 1) % CombatLogMaxLines;
+            write = (_combatLogHead + _combatLogCount) % CombatLogMaxLines;
+        }
+        else
+            _combatLogCount++;
+        _combatLog[write] = line;
         RefreshInfoPanel();
     }
 
@@ -1402,8 +1434,8 @@ public partial class Level01 : Control
         if (_infoLabel == null)
             return;
         var sb = new System.Text.StringBuilder(BuildInitiativeInfo());
-        for (int i = 0; i < _combatLog.Count; i++)
-            sb.Append("\n").Append(_combatLog[i]);
+        for (int i = 0; i < _combatLogCount; i++)
+            sb.Append("\n").Append(_combatLog[(_combatLogHead + i) % CombatLogMaxLines]);
         _infoLabel.Text = sb.ToString();
     }
 
@@ -1411,31 +1443,71 @@ public partial class Level01 : Control
     // obstacles and every token except the moving one as walls.
     private Dictionary<Vector2I, int> ComputeDistances(Vector2I start, int range, int movingIndex)
     {
-        var dist = new Dictionary<Vector2I, int> { [start] = 0 };
-        var queue = new Queue<Vector2I>();
-        queue.Enqueue(start);
-        while (queue.Count > 0)
+        var dist = new Dictionary<Vector2I, int>(GridWidth * GridHeight);
+        FillDistances(start, range, movingIndex, dist);
+        return dist;
+    }
+
+    // Flat BFS (no per-cell dictionary boxing): distance from <start> to every
+    // reachable tile, obstacles and every token except the moving one treated
+    // as walls. Results land in the reused _bfsDist array (row-major, -1 =
+    // unreachable); <into> (optional) is also filled from it.
+    private readonly int[] _bfsDist = new int[GridWidth * GridHeight];
+    private readonly int[] _bfsQueue = new int[GridWidth * GridHeight];
+    private int _bfsTail;
+    private int _bfsMoving;
+
+    private void FillDistances(Vector2I start, int range, int movingIndex, Dictionary<Vector2I, int>? into = null)
+    {
+        int cols = GridWidth, rows = GridHeight;
+        Array.Fill(_bfsDist, -1);
+        _bfsMoving = movingIndex;
+        int head = 0;
+        _bfsTail = 0;
+        _bfsDist[start.Y * cols + start.X] = 0;
+        _bfsQueue[_bfsTail++] = start.Y * cols + start.X;
+        while (head < _bfsTail)
         {
-            var cur = queue.Dequeue();
-            int d = dist[cur];
+            int cur = _bfsQueue[head++];
+            int d = _bfsDist[cur];
             if (d >= range)
                 continue;
-            foreach (var dir in Dirs)
+            int cx = cur % cols, cy = cur / cols;
+            // four neighbours: +1/-1 (same row), +cols/-cols (next/prev row)
+            if (cx > 0)
+                Visit(cur - 1, cx - 1, cy, d);
+            if (cx < cols - 1)
+                Visit(cur + 1, cx + 1, cy, d);
+            if (cy > 0)
+                Visit(cur - cols, cx, cy - 1, d);
+            if (cy < rows - 1)
+                Visit(cur + cols, cx, cy + 1, d);
+        }
+        if (into == null)
+            return;
+        into.Clear();
+        for (int y = 0; y < rows; y++)
+        {
+            int rowStart = y * cols;
+            for (int x = 0; x < cols; x++)
             {
-                var next = cur + dir;
-                if (next.X < 0 || next.X >= GridWidth || next.Y < 0 || next.Y >= GridHeight)
-                    continue;
-                if (Walkable[next.Y, next.X] != 1)
-                    continue;
-                if (IsOccupiedBy(next, movingIndex))
-                    continue;
-                if (dist.ContainsKey(next))
-                    continue;
-                dist[next] = d + 1;
-                queue.Enqueue(next);
+                int d = _bfsDist[rowStart + x];
+                if (d >= 0)
+                    into[new Vector2I(x, y)] = d;
             }
         }
-        return dist;
+    }
+
+    private void Visit(int idx, int nx, int ny, int d)
+    {
+        if (_bfsDist[idx] >= 0)
+            return;
+        if (Walkable[ny, nx] != 1)
+            return;
+        if (IsOccupiedBy(new Vector2I(nx, ny), _bfsMoving))
+            return;
+        _bfsDist[idx] = d + 1;
+        _bfsQueue[_bfsTail++] = idx;
     }
 
     // Distance from <start> to <cell> in a BFS map where <cell> may itself be
@@ -1649,7 +1721,7 @@ public partial class Level01 : Control
 
     private void MoveTokenTo(int index, Vector2I cell)
     {
-        _tokens[index].Position = new Vector2(cell.X * TileSize, cell.Y * TileSize);
+        SetTokenPos(index, cell);
         _reachable = ComputeDistances(cell, _turns.Combatants[index].MovementRange, index);
         // A move changes where shots/strikes are fired from: refresh the
         // shoot-, melee-, and grenade-target sets from the new position so a
@@ -1669,7 +1741,7 @@ public partial class Level01 : Control
     // remain valid for the rest of the turn.
     private void MovePartyTo(Vector2I next)
     {
-        _tokens[_turns.CurrentIndex].Position = new Vector2(next.X * TileSize, next.Y * TileSize);
+        SetTokenPos(_turns.CurrentIndex, next);
         _movedThisTurn = true;
         // A move changes where shots/strikes are fired from: refresh the
         // shoot-, melee-, and grenade-target sets from the new position so a
@@ -1754,15 +1826,16 @@ public partial class Level01 : Control
         int range = enemy.Equipment.Weapon.Range;
         if (CanShootAt(CurrentCell(), targetCell, range))
             return; // already in shooting range: hold position, let the shot land
+        // ONE BFS from the target (enemy treated as the moving token) is enough
+        // for the whole approach: the map is static during the walk, and the
+        // enemy's own cell is in the map, so its distance is always valid.
+        // (The target's token is a wall, so once adjacent no neighbour can get
+        // any closer.)
+        var toward = ComputeDistances(targetCell, int.MaxValue, index);
         int steps = enemy.MovementRange;
         var pos = CurrentCell();
         while (steps-- > 0)
         {
-            // BFS from the target treating the ENEMY as the moving token, so
-            // the enemy's own cell is in the map (its distance = how far it
-            // still is). The target's token is a wall, so once adjacent no
-            // neighbour can get any closer.
-            var toward = ComputeDistances(targetCell, int.MaxValue, index);
             if (!toward.TryGetValue(pos, out int curD))
                 break; // boxed in by obstacles
             if (curD <= 1)
@@ -2055,10 +2128,10 @@ public partial class Level01 : Control
             && !_turns.Combatants[_turns.CurrentIndex].IsEnemy;
         bool grenadeView = _actionMode == ActionMode.Grenade
             && !_turns.Combatants[_turns.CurrentIndex].IsEnemy;
-        _grid.Reachable = (shootView || meleeView || grenadeView) ? new HashSet<Vector2I>() : _reachable.Keys;
-        _grid.Shootable = shootView ? _shootTargets : new HashSet<Vector2I>();
-        _grid.Meleeable = meleeView ? _meleeTargets : new HashSet<Vector2I>();
-        _grid.Grenadeable = grenadeView ? _grenadeTargets : new HashSet<Vector2I>();
+        _grid.Reachable = (shootView || meleeView || grenadeView) ? NoCells : _reachable.Keys;
+        _grid.Shootable = shootView ? _shootTargets : NoCells;
+        _grid.Meleeable = meleeView ? _meleeTargets : NoCells;
+        _grid.Grenadeable = grenadeView ? _grenadeTargets : NoCells;
         RefreshBlastPreview();
         RefreshHoverTarget();
         RefreshGridLabels();
@@ -2074,16 +2147,20 @@ public partial class Level01 : Control
     // every RefreshHighlights (mode/turn/move changes).
     private void RefreshBlastPreview()
     {
-        var blastPreview = new HashSet<Vector2I>();
         bool grenadeView = _actionMode == ActionMode.Grenade
             && !_turns.Combatants[_turns.CurrentIndex].IsEnemy;
         if (grenadeView && _hoverCell != null && _grenadeTargets.Contains(_hoverCell.Value))
         {
-            blastPreview.Add(_hoverCell.Value);
-            foreach (var dir in Dirs)
-                blastPreview.Add(_hoverCell.Value + dir);
+            var c = _hoverCell.Value;
+            _blastPreview[0] = c;
+            _blastPreview[1] = c + Dirs[0];
+            _blastPreview[2] = c + Dirs[1];
+            _blastPreview[3] = c + Dirs[2];
+            _blastPreview[4] = c + Dirs[3];
+            _grid.BlastCells = _blastPreview;
         }
-        _grid.BlastCells = blastPreview;
+        else
+            _grid.BlastCells = NoCells;
     }
 
     // Rebuild the per-token HP text list the grid layer draws (live tokens
@@ -2140,12 +2217,11 @@ public partial class Level01 : Control
             var (sx, sy) = StartCells[i];
             // Party tokens are P0.., enemy tokens E0.. (test hooks key off this).
             var tokenName = Roster[i].IsEnemy ? $"E{i - 4}" : $"P{i}";
-            var token = new TokenNode(tokenName, color, TileSize)
-            {
-                Position = new Vector2(sx * TileSize, sy * TileSize),
-            };
+            var token = new TokenNode(tokenName, color, TileSize);
             _iso.AddChild(token);
             _tokens.Add(token);
+            _cells[i] = new Vector2I(sx, sy);
+            token.Position = new Vector2(sx * TileSize, sy * TileSize);
             // Unskewed name label (board-space Control) above the diamond.
             var label = new Label
             {
@@ -2351,10 +2427,10 @@ public partial class Level01 : Control
         _bioStimButton.Disabled = _actionUsed || stims <= 0 || current.HitPoints >= current.MaxHitPoints;
         _grenadeButton.Disabled = _actionUsed || nades <= 0;
         _itemsMenu.Visible = _itemsMenuOpen && !enemyTurn;
-        _shootButton.Modulate = _actionMode == ActionMode.Shoot ? Colors.White : new Color(1, 1, 1, 0.55f);
-        _meleeButton.Modulate = _actionMode == ActionMode.Melee ? Colors.White : new Color(1, 1, 1, 0.55f);
-        _moveButton.Modulate = _actionMode == ActionMode.Move ? Colors.White : new Color(1, 1, 1, 0.55f);
-        _itemsButton.Modulate = _actionMode == ActionMode.Grenade ? Colors.White : new Color(1, 1, 1, 0.55f);
+        _shootButton.Modulate = _actionMode == ActionMode.Shoot ? Colors.White : DimColor;
+        _meleeButton.Modulate = _actionMode == ActionMode.Melee ? Colors.White : DimColor;
+        _moveButton.Modulate = _actionMode == ActionMode.Move ? Colors.White : DimColor;
+        _itemsButton.Modulate = _actionMode == ActionMode.Grenade ? Colors.White : DimColor;
     }
 
     // Keep the menu on screen at all times: it hugs the bottom-left corner
