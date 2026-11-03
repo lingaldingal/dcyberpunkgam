@@ -26,6 +26,31 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - `tests/combat_test.gd` — headless combat test (equipment + random ranged AND melee weapon assignment, **circle-based shoot range (any direction, dx²+dy² ≤ range²) + LOS blocking by walls AND characters**, shooting-circle overlay, **weapon-based range/damage: pistol 4/2, rifle 6/3**, **melee: 4-adjacent-squares, knife 3 / katana 5, melee+shoot share the one action, melee-after-move recompute, enemy melee fallback when LOS blocked + enemy prefers shoot**, once-per-turn, WAIT, **enemy AI (move into shooting circle / hold + shoot or melee)**, **BioStim heal + grenade (circle throw range, 5-cell cross blast, red cross hover preview)**, death removes token + skips turns, **END TURN button in the actions menu**, action-menu screen clamping). ~155 checks.
 - `tests/overwatch_test.gd` — headless overwatch test (**Bresenham line from current cell to target, capped at weapon range, diagonals included**, range cap rifle 6 / pistol 4, re-anchor on a move, **enemy-walks-into-line trigger** (enemy stops on the watched cell, 0.5s pause armed, console log, HIT), persist-until-next-turn clearing, board-click commit spends the action). ~22 checks.
 - `readme.me` — pre-existing file, untouched
+- `assets/textures/floor/` — AI-generated floor textures (1024×1024 PNG): `stone_floor.png`, `wood_floor.png`, `dirt_ground.png`, `metal_grate.png`, `crystal_floor.png`
+
+## ComfyUI + Texture Generation
+- **ComfyUI** is installed at `~/ComfyUI` (git clone, Python 3.12 venv, PyTorch cu128).
+  Start with `~/ComfyUI/start.sh` (port 8188, localhost only).
+- **Model**: `sd_xl_base_1.0.safetensors` (SDXL 1.0, 6.6GB) in `~/ComfyUI/models/checkpoints/`.
+  Downloaded from ModelScope (`AI-ModelScope/stable-diffusion-xl-base-1.0`) because
+  HuggingFace is blocked from this network (401 on all file/API endpoints).
+- **Generation script**: `~/ComfyUI/generate_floor_textures.py` — generates 5 floor
+  textures (stone, wood, dirt, metal grate, crystal) via the ComfyUI API.
+  Usage: `python generate_floor_textures.py --output-dir <path>`
+- **Workflow**: Standard SDXL text-to-image (KSampler, dpmpp_2m, karras, 30 steps,
+  CFG 7.0, 1024×1024). Prompts use "seamless tileable texture, top-down view" +
+  material description + "no perspective, flat surface" to get flat top-down
+  surfaces suitable for iso tile mapping.
+- **Game integration**: `Level01.FloorTextureName` (default `"stone_floor"`) selects
+  which texture to load from `res://assets/textures/floor/`. `LoadFloorTexture()`
+  in `BuildBoard()` loads it via `GD.Load<Texture2D>(path)` and sets
+  `_grid.FloorTexture`. `IsoGrid._Draw` uses `DrawTextureRect` on each walkable
+  tile's logical bounding square (`Rect2(x*Tile, y*Tile, Tile, Tile)`); the iso
+  skew on the parent `Iso` node projects the square to a 2:1 diamond automatically.
+  Falls back to flat colors when no texture file exists.
+- **Future**: wall textures, structure interiors, multiple elevation levels.
+  The texture system is designed to extend: add `WallTexture` to `IsoGrid`,
+  per-tile texture selection, and layered rendering for structures.
 
 ## Cutscene (scene_test)
 `SceneTest` (C#) is the basic 2D dialogue cutscene reached from the menu's

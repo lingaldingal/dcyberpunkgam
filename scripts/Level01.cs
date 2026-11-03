@@ -2479,6 +2479,7 @@ public partial class Level01 : Control
         // The floor grid + highlights + HP readouts, drawn in logical board
         // pixels inside the skewed layer.
         _grid = new IsoGrid { Name = "Grid", Cols = GridWidth, Rows = GridHeight, Tile = TileSize, Map = Walkable };
+        LoadFloorTexture();
         _iso.AddChild(_grid);
 
         // Move-mode path preview (hover a reachable tile to see the route).
@@ -2513,6 +2514,27 @@ public partial class Level01 : Control
         RefreshGridLabels();
         _grid.Rebuild();
         UpdateTokenLabels();
+    }
+
+    // Loads the floor texture from assets/textures/floor/ if present. The
+    // texture is a top-down material surface (1024x1024) that gets mapped
+    // onto each tile's logical bounding square; the iso skew projects it to
+    // a diamond. Falls back to flat colors when no texture file is found.
+    // `FloorTextureName` selects which generated texture to use.
+    public string FloorTextureName = "stone_floor";
+
+    private void LoadFloorTexture()
+    {
+        var path = $"res://assets/textures/floor/{FloorTextureName}.png";
+        if (Godot.FileAccess.FileExists(path))
+        {
+            _grid.FloorTexture = GD.Load<Texture2D>(path);
+            GD.Print($"[Level01] Loaded floor texture: {path}");
+        }
+        else
+        {
+            GD.PushWarning($"[Level01] Floor texture not found: {path} (using flat colors)");
+        }
     }
 
     // Refresh the grid layer's HP text after a combatant's HP changed.

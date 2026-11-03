@@ -34,6 +34,12 @@ public partial class IsoGrid : Node2D
     // (x, y, hp text) per live token, drawn above the token's diamond.
     public List<(int X, int Y, string Text)> TokenLabels = new();
 
+    // Floor texture (loaded from assets/textures/floor/). When set, walkable
+    // tiles are drawn with this texture instead of flat colors. The texture
+    // is mapped onto each tile's logical bounding square; the iso skew on the
+    // parent node projects it to a diamond automatically.
+    public Texture2D? FloorTexture;
+
     private static readonly Color FloorA = new(0.13f, 0.16f, 0.24f);
     private static readonly Color FloorB = new(0.09f, 0.11f, 0.16f);
     private static readonly Color Edge = new(0.35f, 0.5f, 0.7f, 0.16f);
@@ -62,6 +68,9 @@ public partial class IsoGrid : Node2D
         public Color Color;
         // Edge outline segments (DrawMultiline point pairs); empty for walls.
         public Vector2[] Ring;
+        // Logical bounding rect for texture drawing (tile origin to tile+1).
+        public Rect2 TexRect;
+        public bool Walkable;
     }
 
     private struct WallFace
@@ -96,6 +105,8 @@ public partial class IsoGrid : Node2D
                     Poly = poly,
                     Color = walkable ? ((x + y) % 2 == 0 ? FloorA : FloorB) : WallTop,
                     Ring = walkable ? RingSegments(poly) : Array.Empty<Vector2>(),
+                    TexRect = new Rect2(x * Tile, y * Tile, Tile, Tile),
+                    Walkable = walkable,
                 });
                 if (!walkable)
                 {
@@ -167,7 +178,17 @@ public partial class IsoGrid : Node2D
         // 1. Floor tiles (geometry cached in EnsureFloorBuilt).
         foreach (var t in _floorTiles)
         {
-            DrawColoredPolygon(t.Poly, t.Color);
+            if (t.Walkable && FloorTexture != null)
+            {
+                // Draw the texture onto the tile's logical bounding square.
+                // The iso skew on the parent node projects this square to a
+                // 2:1 diamond on screen automatically.
+                DrawTextureRect(FloorTexture, t.TexRect, false);
+            }
+            else
+            {
+                DrawColoredPolygon(t.Poly, t.Color);
+            }
             if (t.Ring.Length > 0)
                 DrawMultiline(t.Ring, Edge, 1f);
         }
