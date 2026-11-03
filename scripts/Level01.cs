@@ -2516,24 +2516,42 @@ public partial class Level01 : Control
         UpdateTokenLabels();
     }
 
-    // Loads the floor texture from assets/textures/floor/ if present. The
-    // texture is a top-down material surface (1024x1024) that gets mapped
-    // onto each tile's logical bounding square; the iso skew projects it to
-    // a diamond. Falls back to flat colors when no texture file is found.
-    // `FloorTextureName` selects which generated texture to use.
+    // Loads floor texture variants from assets/textures/floor/. Each
+    // variant is a top-down material surface (1024x1024) mapped onto a tile's
+    // logical bounding square; the iso skew projects it to a diamond.
+    // Per-tile variant selection (deterministic hash in IsoGrid) breaks up
+    // the repeat so adjacent tiles show different textures.
+    // `FloorTextureName` selects the base name (e.g. "stone_floor" loads
+    // stone_floor_0.png, stone_floor_1.png, stone_floor_2.png).
     public string FloorTextureName = "stone_floor";
+    public int FloorTextureVariants = 3;
 
     private void LoadFloorTexture()
     {
-        var path = $"res://assets/textures/floor/{FloorTextureName}.png";
-        if (Godot.FileAccess.FileExists(path))
+        var loaded = new List<Texture2D>();
+        for (int v = 0; v < FloorTextureVariants; v++)
         {
-            _grid.FloorTexture = GD.Load<Texture2D>(path);
-            GD.Print($"[Level01] Loaded floor texture: {path}");
+            var path = $"res://assets/textures/floor/{FloorTextureName}_{v}.png";
+            if (Godot.FileAccess.FileExists(path))
+            {
+                loaded.Add(GD.Load<Texture2D>(path)!);
+            }
+        }
+        // Fall back to the non-suffixed name if no variants were found.
+        if (loaded.Count == 0)
+        {
+            var path = $"res://assets/textures/floor/{FloorTextureName}.png";
+            if (Godot.FileAccess.FileExists(path))
+                loaded.Add(GD.Load<Texture2D>(path)!);
+        }
+        if (loaded.Count > 0)
+        {
+            _grid.FloorTextures = loaded.ToArray();
+            GD.Print($"[Level01] Loaded {loaded.Count} floor texture variant(s): {FloorTextureName}");
         }
         else
         {
-            GD.PushWarning($"[Level01] Floor texture not found: {path} (using flat colors)");
+            GD.PushWarning($"[Level01] No floor textures found for '{FloorTextureName}' (using flat colors)");
         }
     }
 

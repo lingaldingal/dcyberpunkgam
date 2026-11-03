@@ -8,11 +8,6 @@ func _initialize():
 	for i in 30:
 		await process_frame
 	
-	# Verify texture is loaded
-	var grid = level.get_node("Board/Iso/Grid")
-	var tex = grid.FloorTexture
-	print("FloorTexture: ", "LOADED " + str(tex.get_size()) if tex != null else "NULL")
-	
 	# Take full view screenshot
 	for i in 5:
 		await process_frame

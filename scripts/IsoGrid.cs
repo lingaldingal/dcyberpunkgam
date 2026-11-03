@@ -34,11 +34,11 @@ public partial class IsoGrid : Node2D
     // (x, y, hp text) per live token, drawn above the token's diamond.
     public List<(int X, int Y, string Text)> TokenLabels = new();
 
-    // Floor texture (loaded from assets/textures/floor/). When set, walkable
-    // tiles are drawn with this texture instead of flat colors. The texture
-    // is mapped onto each tile's logical bounding square; the iso skew on the
-    // parent node projects it to a diamond automatically.
-    public Texture2D? FloorTexture;
+    // Floor texture variants (loaded from assets/textures/floor/). When
+    // non-empty, walkable tiles are drawn with a randomly-selected variant
+    // instead of flat colors. Each tile gets its variant index at build time
+    // so adjacent tiles show different textures, breaking up the repeat.
+    public Texture2D[] FloorTextures = Array.Empty<Texture2D>();
 
     private static readonly Color FloorA = new(0.13f, 0.16f, 0.24f);
     private static readonly Color FloorB = new(0.09f, 0.11f, 0.16f);
@@ -71,6 +71,9 @@ public partial class IsoGrid : Node2D
         // Logical bounding rect for texture drawing (tile origin to tile+1).
         public Rect2 TexRect;
         public bool Walkable;
+        // Which texture variant this tile uses (index into FloorTextures).
+        // Assigned once at build time so adjacent tiles differ.
+        public int TexIndex;
     }
 
     private struct WallFace
@@ -100,6 +103,15 @@ public partial class IsoGrid : Node2D
             {
                 bool walkable = Map[y, x] == 1;
                 var poly = Diamond(x, y);
+                // Pick a texture variant per tile. A deterministic hash of the
+                // cell (not a live RNG) keeps the assignment stable across
+                // rebuilds so the floor doesn't shuffle on every redraw.
+                int texIndex = 0;
+                if (FloorTextures.Length > 1)
+                {
+                    int h = (x * 73856093) ^ (y * 19349663);
+                    texIndex = Math.Abs(h % FloorTextures.Length);
+                }
                 _floorTiles.Add(new FloorTile
                 {
                     Poly = poly,
@@ -107,6 +119,7 @@ public partial class IsoGrid : Node2D
                     Ring = walkable ? RingSegments(poly) : Array.Empty<Vector2>(),
                     TexRect = new Rect2(x * Tile, y * Tile, Tile, Tile),
                     Walkable = walkable,
+                    TexIndex = texIndex,
                 });
                 if (!walkable)
                 {
@@ -178,12 +191,12 @@ public partial class IsoGrid : Node2D
         // 1. Floor tiles (geometry cached in EnsureFloorBuilt).
         foreach (var t in _floorTiles)
         {
-            if (t.Walkable && FloorTexture != null)
+            if (t.Walkable && FloorTextures.Length > 0)
             {
-                // Draw the texture onto the tile's logical bounding square.
-                // The iso skew on the parent node projects this square to a
-                // 2:1 diamond on screen automatically.
-                DrawTextureRect(FloorTexture, t.TexRect, false);
+                // Draw the per-tile texture variant onto the tile's logical
+                // bounding square. The iso skew on the parent node projects
+                // this square to a 2:1 diamond on screen automatically.
+                DrawTextureRect(FloorTextures[t.TexIndex], t.TexRect, false);
             }
             else
             {

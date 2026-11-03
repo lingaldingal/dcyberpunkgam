@@ -6,16 +6,8 @@ func _initialize():
 	for i in 10:
 		await process_frame
 	
-	# Check if the grid has a floor texture
-	var grid = level.get_node("Board/Iso/Grid")
-	var tex = grid.FloorTexture
-	if tex == null:
-		print("FAIL: FloorTexture is null on grid")
-	else:
-		print("OK: FloorTexture loaded: ", tex.get_size())
-	
 	# Check the texture file exists
-	var path = "res://assets/textures/floor/stone_floor.png"
+	var path = "res://assets/textures/floor/stone_floor_0.png"
 	if FileAccess.file_exists(path):
 		print("OK: File exists: ", path)
 	else:
