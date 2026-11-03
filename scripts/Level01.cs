@@ -2534,7 +2534,9 @@ public partial class Level01 : Control
             var path = $"res://assets/textures/floor/{FloorTextureName}_{v}.png";
             if (Godot.FileAccess.FileExists(path))
             {
-                loaded.Add(GD.Load<Texture2D>(path)!);
+                var tex = GD.Load<Texture2D>(path);
+                if (tex != null)
+                    loaded.Add(tex);
             }
         }
         // Fall back to the non-suffixed name if no variants were found.
@@ -2542,7 +2544,11 @@ public partial class Level01 : Control
         {
             var path = $"res://assets/textures/floor/{FloorTextureName}.png";
             if (Godot.FileAccess.FileExists(path))
-                loaded.Add(GD.Load<Texture2D>(path)!);
+            {
+                var tex = GD.Load<Texture2D>(path);
+                if (tex != null)
+                    loaded.Add(tex);
+            }
         }
         if (loaded.Count > 0)
         {
