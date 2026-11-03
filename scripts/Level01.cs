@@ -2609,7 +2609,8 @@ public partial class Level01 : Control
     // the repeat so adjacent tiles show different textures.
     // `FloorTextureName` selects the base name (e.g. "stone_floor" loads
     // stone_floor_0.png, stone_floor_1.png, stone_floor_2.png).
-    public string FloorTextureName = "stone_floor";
+    // Level 1 is a junkyard, so the default is the grimy concrete floor.
+    public string FloorTextureName = "junk_concrete";
     public int FloorTextureVariants = 3;
 
     private void LoadFloorTexture()

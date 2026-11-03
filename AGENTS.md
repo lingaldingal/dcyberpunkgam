@@ -26,14 +26,33 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - `tests/combat_test.gd` — headless combat test (equipment + random ranged AND melee weapon assignment, **circle-based shoot range (any direction, dx²+dy² ≤ range²) + LOS blocking by walls AND characters**, shooting-circle overlay, **weapon-based range/damage: pistol 4/2, rifle 6/3**, **melee: 4-adjacent-squares, knife 3 / katana 5, melee+shoot share the one action, melee-after-move recompute, enemy melee fallback when LOS blocked + enemy prefers shoot**, once-per-turn, WAIT, **enemy AI (move into shooting circle / hold + shoot or melee)**, **BioStim heal + grenade (circle throw range, 5-cell cross blast, red cross hover preview)**, death removes token + skips turns, **END TURN button in the actions menu**, action-menu screen clamping). ~155 checks.
 - `tests/overwatch_test.gd` — headless overwatch test (**Bresenham line from current cell to target, capped at weapon range, diagonals included**, range cap rifle 6 / pistol 4, re-anchor on a move, **enemy-walks-into-line trigger** (enemy stops on the watched cell, 0.5s pause armed, console log, HIT), persist-until-next-turn clearing, board-click commit spends the action). ~22 checks.
 - `readme.me` — pre-existing file, untouched
-- `assets/textures/floor/` — AI-generated floor textures (1024×1024 PNG): `stone_floor.png`, `wood_floor.png`, `dirt_ground.png`, `metal_grate.png`, `crystal_floor.png`
+- `assets/textures/floor/` — AI-generated floor textures. Old set: 1024×1024 PNG `stone_floor/wood_floor/dirt_ground/metal_grate/crystal_floor` (each with `_0/_1/_2` variants). **Junkyard set (Level 1 theme)**: crisp 64×64 seamless pixel-art PNGs `junk_concrete.png`, `junk_asphalt.png`, `junk_dirt.png`, `junk_gravel.png` (palette-32, generated with the SDXL + NeriJS pixel-art-xl LoRA workflow below).
 
 ## ComfyUI + Texture Generation
 - **ComfyUI** is installed at `~/ComfyUI` (git clone, Python 3.12 venv, PyTorch cu128).
   Start with `~/ComfyUI/start.sh` (port 8188, localhost only).
+- **Pixel-art floor workflow** (`~/ComfyUI/workflows/Isometric_Pixel_Floor_Generator.json`):
+  SDXL 1.0 + **NeriJS pixel-art-xl LoRA** (`models/loras/pixel-art-xl_v1.safetensors`, from
+  huggingface.co/nerijs/pixel-art-xl) at LoRA strength 1.0, 512×512, dpmpp_2m/karras 28 steps
+  CFG 7.0. Prompts use "top-down view of a flat seamless tileable texture, pixel art, 16-bit
+  retro game style, top-down, flat surface, no perspective, uniform lighting" + material.
+  Negative: "3d render, perspective, isometric projection, … blurry, smooth, anti-aliased, …".
+  - **`~/ComfyUI/scripts/gen_junkyard_floors.py`** — batch-generates the 5 junkyard floor
+    variants (concrete/asphalt/dirt/metal/gravel) via the ComfyUI `/prompt` API, then
+    post-processes each into a seamless 64×64 palette-32 game tile + 8× nearest-neighbor
+    preview. Outputs to `~/ComfyUI/output/isometric_floor_generator/junkyard/`. Requires the
+    ComfyUI server running. Add a `PreviewImage` node to any API workflow (a bare `VAEDecode`
+    is not recognized as an output → HTTP 400 "prompt_no_outputs").
+  - **`~/ComfyUI/scripts/postprocess_floor.py`** — standalone post-processor: seamless
+    offset-blend of edges + nearest-neighbor downscale to tile size + median-cut palette
+    reduction. `python postprocess_floor.py in.png out.png --tile 64 --palette 32`.
+  - The junkyard tiles were copied into `assets/textures/floor/junk_*.png`; the metal variant
+    was too bright (lum ~165) for the grimy theme so only concrete/asphalt/dirt/gravel shipped.
+  - **HuggingFace is reachable** from this network (200); ModelScope also works. `nerijs/pixel-art-xl`
+    is the go-to SDXL-compatible pixel-art LoRA (35k+ downloads).
 - **Model**: `sd_xl_base_1.0.safetensors` (SDXL 1.0, 6.6GB) in `~/ComfyUI/models/checkpoints/`.
-  Downloaded from ModelScope (`AI-ModelScope/stable-diffusion-xl-base-1.0`) because
-  HuggingFace is blocked from this network (401 on all file/API endpoints).
+  (Was originally downloaded from ModelScope; HuggingFace is now reachable from this
+  network — `nerijs/pixel-art-xl` LoRA came straight from HF.)
 - **Generation script**: `~/ComfyUI/generate_floor_textures.py` — generates 5 floor
   textures (stone, wood, dirt, metal grate, crystal) via the ComfyUI API.
   Usage: `python generate_floor_textures.py --output-dir <path>`
