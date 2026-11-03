@@ -14,5 +14,9 @@ if [[ "${1:-}" != "--no-build" ]]; then
   dotnet build dcyberpunkgam.csproj --nologo -v quiet
 fi
 
+# Import textures (fast no-op if nothing new; needed after git pull with new assets).
+echo ">> importing assets..."
+"$GODOT" --headless --path . --import
+
 echo ">> launching game (menu)..."
 exec "$GODOT" --path . "$@"
