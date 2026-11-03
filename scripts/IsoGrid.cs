@@ -29,6 +29,8 @@ public partial class IsoGrid : Node2D
     // The cross-shaped blast area of the hovered grenade target (5 cells),
     // shown as a red cross preview while aiming.
     public IEnumerable<Vector2I> BlastCells { get; set; } = new HashSet<Vector2I>();
+    // Cells the active combatant is overwatching (cyan diamonds).
+    public IEnumerable<Vector2I> OverwatchCells { get; set; } = new HashSet<Vector2I>();
     // (x, y, hp text) per live token, drawn above the token's diamond.
     public List<(int X, int Y, string Text)> TokenLabels = new();
 
@@ -47,6 +49,9 @@ public partial class IsoGrid : Node2D
     // The blast preview is a RED cross over the 5 blast cells while aiming
     // (drawn after the yellow throw targets so it reads on top of them).
     private static readonly Color BlastHl = new(0.95f, 0.30f, 0.25f, 0.60f);
+    // Overwatch: the watched line (cyan diamonds) — distinct from the yellow
+    // shoot/grenade targets so the player can see the danger line.
+    private static readonly Color OverwatchHl = new(0.35f, 0.85f, 0.95f, 0.45f);
     private static readonly Color HpText = new(0.9f, 0.95f, 1f);
 
     // Static floor geometry, cached once so _Draw (which runs on every
@@ -188,6 +193,8 @@ public partial class IsoGrid : Node2D
             DrawColoredPolygon(Diamond(cell.X, cell.Y), GrenadeHl);
         foreach (var cell in BlastCells)
             DrawColoredPolygon(Diamond(cell.X, cell.Y), BlastHl);
+        foreach (var cell in OverwatchCells)
+            DrawColoredPolygon(Diamond(cell.X, cell.Y), OverwatchHl);
 
         // 3. Token HP readouts, drawn last so they sit on top of everything.
         var font = ThemeDB.FallbackFont;

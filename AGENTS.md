@@ -24,6 +24,7 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - `tests/cutscene_test.gd` — headless functional test (menu → SCENE TEST → name-instant/body-typewriter reveal, speaker alternation, highlight, click-to-advance, back). ~19 checks.
 - `tests/resolution_test.gd` — headless test: menu RESOLUTION button cycles 1280x720 → 1600x900 → 1920x1080 → back
 - `tests/combat_test.gd` — headless combat test (equipment + random ranged AND melee weapon assignment, **circle-based shoot range (any direction, dx²+dy² ≤ range²) + LOS blocking by walls AND characters**, shooting-circle overlay, **weapon-based range/damage: pistol 4/2, rifle 6/3**, **melee: 4-adjacent-squares, knife 3 / katana 5, melee+shoot share the one action, melee-after-move recompute, enemy melee fallback when LOS blocked + enemy prefers shoot**, once-per-turn, WAIT, **enemy AI (move into shooting circle / hold + shoot or melee)**, **BioStim heal + grenade (circle throw range, 5-cell cross blast, red cross hover preview)**, death removes token + skips turns, **END TURN button in the actions menu**, action-menu screen clamping). ~155 checks.
+- `tests/overwatch_test.gd` — headless overwatch test (**Bresenham line from current cell to target, capped at weapon range, diagonals included**, range cap rifle 6 / pistol 4, re-anchor on a move, **enemy-walks-into-line trigger** (enemy stops on the watched cell, 0.5s pause armed, console log, HIT), persist-until-next-turn clearing, board-click commit spends the action). ~22 checks.
 - `readme.me` — pre-existing file, untouched
 
 ## Cutscene (scene_test)
@@ -293,6 +294,38 @@ SCENE TEST button:
   (player-only for now). Test hooks: `IsGrenadeTarget(int,int)`, `UseGrenade(int,int)`,
   `GetBlastCells() -> string` (the 5 preview cells, sorted `"x,y …"`),
   `ForceGrenadeMode()`.
+- **Overwatch** (`ActionMode.Overwatch`, `OnOverwatchPressed` from the
+  OVERWATCH button, `TryOverwatch` / `CheckOverwatchTrigger` /
+  `ApplyOverwatchShot`): a combatant (party **or** enemy) designates a far-end
+  cell within its weapon's range; the **straight (Bresenham) line** from its
+  CURRENT cell to that target — capped at the weapon's range, **diagonals
+  included** — is "watched" (`OverwatchLine`, the same Bresenham as
+  `HasLineOfSight`). The overwatch **persists until the combatant's next turn**
+  (cleared in `SetActive` for the active combatant) and is **anchored to the
+  current cell** (recomputed on a move via `RefreshOverwatchCells`, called from
+  `MovePartyTo`/`MoveTokenTo`). **Trigger**: on an **enemy's** turn, if that
+  enemy walks INTO a watched cell (`CheckOverwatchTrigger`, checked per step in
+  `EnemyMoveToward`), every living overwatcher whose line contains the cell
+  fires a **reaction shot** (weapon damage, hit roll via `RollHit`) at the
+  mover, the game **pauses 0.5s** (`_overwatchPause` in `_Process` — the whole
+  update loop is skipped while armed), and the attack is **logged to the
+  console** (`LogCombat` "… OVERWATCHES …") and shown in the info panel.
+  Activating overwatch spends the combatant's **one action** (latches
+  `_actionUsed`, like shoot/melee/wait). **No enemy AI for overwatch yet**
+  (enemies can be given one via `SetOverwatch` / the same `OverwatchTarget`
+  field, but the AI does not choose to overwatch). In overwatch mode (and
+  after a committed overwatch) the watched line is drawn with **cyan**
+  diamonds (`IsoGrid.OverwatchCells`; move=green, shoot=yellow, melee=orange,
+  grenade=yellow, overwatch=cyan). Test hooks: `SetOverwatch(name,x,y)`,
+  `GetOverwatchTarget(name) -> Vector2I` (`(-1,-1)` if none),
+  `GetOverwatchLine(name) -> string` (sorted `"x,y …"`), `IsOverwatchCell(x,y)`,
+  `GetOverwatchPause() -> float`, `SetOverwatchPause(float)` (headless delta is
+  0, so a real 0.5s pause never expires in tests), `ForceOverwatchMode()`.
+  `tests/overwatch_test.gd` covers the line (horizontal + 45° diagonal), the
+  range cap (rifle 6 / pistol 4), re-anchoring on a move, the enemy-walks-into
+  the line trigger (enemy stops on the watched cell, 0.5s pause armed, console
+  log, HIT), the persist-until-next-turn clearing, and the board-click commit
+  (spends the action). ~22 checks.
 - **Line of sight**: a shot is only valid if the segment shooter→target is
   clear — `HasLineOfSight(from, to, range)` walks the intermediate cells with
   an integer **Bresenham** (exact 45° diagonals are walked one-by-one; other
@@ -376,6 +409,7 @@ $GODOT --headless --path . --quit-after 120            # smoke run (main scene =
 $GODOT --headless --path . -s res://tests/flow_test.gd      # functional flow test (60 checks)
 $GODOT --headless --path . -s res://tests/cutscene_test.gd  # cutscene test (19 checks)
 $GODOT --headless --path . -s res://tests/combat_test.gd    # combat: weapons/melee/items/enemy AI/shoot/death/actions menu (140 checks)
+$GODOT --headless --path . -s res://tests/overwatch_test.gd # overwatch: line/range cap/diagonals/trigger/pause/log (22 checks)
 ```
 Headless alone is NOT enough for UI: it never renders, so off-screen controls
 are invisible to it. There's a real Xorg at `DISPLAY=:0.0` (no Xvfb/xdotool here).

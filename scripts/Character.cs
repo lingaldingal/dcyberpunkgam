@@ -36,6 +36,16 @@ public class Character
     /// <summary>True once hit points have fallen to zero.</summary>
     public bool IsDead => HitPoints <= 0;
 
+    /// <summary>
+    /// The far-end cell this combatant is overwatching (null = not overwatching).
+    /// The overwatch line is the straight (Bresenham) path from the combatant's
+    /// current cell to this target; every cell on that path except the
+    /// combatant's own is "watched" and triggers a reaction shot if an enemy
+    /// walks into it. Set when overwatch is activated, cleared at the start of
+    /// the combatant's next turn.
+    /// </summary>
+    public Vector2I? OverwatchTarget { get; set; }
+
     /// <summary>Tiles this combatant may move on its turn: 5 + Agility/2 (floor).</summary>
     public int MovementRange => 5 + Agility / 2;
 

@@ -107,13 +107,17 @@ public partial class Level01 : Control
     // Frames an enemy waits before acting, so its action is visible.
     private const int EnemyThinkFrames = 12;
 
+    // Seconds the game is frozen after an overwatch reaction shot fires, so the
+    // reaction reads as a distinct beat before the enemy's turn continues.
+    private const float OverwatchPauseSeconds = 0.5f;
+
     // Basic gear everyone starts with; the weapon is rolled per combatant
     // (pistol or rifle) — see AssignStartingGear.
     private const string HeadGear = "Ballistic Cap";
     private const string BodyGear = "Weave Vest";
     private const int PartyBioStims = 2;
 
-    public enum ActionMode { Move, Shoot, Melee, Grenade }
+    public enum ActionMode { Move, Shoot, Melee, Grenade, Overwatch }
 
     private static readonly Vector2I[] Dirs =
     {
@@ -247,6 +251,7 @@ public partial class Level01 : Control
     private Button _moveButton = null!;
     private Button _waitButton = null!;
     private Button _itemsButton = null!;
+    private Button _overwatchButton = null!;
     private Button _bioStimButton = null!;
     private Button _grenadeButton = null!;
     private Button _endTurnMenuButton = null!;
@@ -262,6 +267,15 @@ public partial class Level01 : Control
     private int _enemyMoveFrames;
     // Set once the active enemy has moved, so the turn ends exactly once.
     private bool _enemyActed;
+
+    // Overwatch: the cells the active combatant is watching (the straight line
+    // from its cell to the overwatch target, excluding its own cell). Recomputed
+    // from the current position on a move; empty when not overwatching.
+    private readonly HashSet<Vector2I> _overwatchCells = new();
+    // Seconds the game is frozen after an overwatch reaction shot fires (0.5s).
+    private float _overwatchPause;
+    // The combatant index that last fired an overwatch reaction (for logging).
+    private int _lastOverwatchIndex = -1;
 
     // Top-left pixel of the viewport within the board (see camera section).
     private Vector2 _cameraPos;
@@ -357,6 +371,18 @@ public partial class Level01 : Control
 
     public override void _Process(double delta)
     {
+        // Overwatch reaction pause: after an overwatch shot fires the whole
+        // game is frozen for _overwatchPause seconds (no enemy movement, no
+        // camera pan, no label updates) so the reaction reads as a distinct
+        // beat. The pause is decremented here and every other update is skipped.
+        if (_overwatchPause > 0f)
+        {
+            _overwatchPause -= (float)delta;
+            if (_overwatchPause < 0f)
+                _overwatchPause = 0f;
+            return;
+        }
+
         // First frame after layout: center the camera on the board (the
         // viewport Size is only valid once the tree has been laid out; in
         // headless test mode it is (0,0) and the camera stays at the origin).
@@ -1234,6 +1260,72 @@ public partial class Level01 : Control
     /// <summary>Test hook: force the active combatant's grenade throw mode.</summary>
     public void ForceGrenadeMode() => OnGrenadePressed();
 
+    /// <summary>Test hook: force the active combatant's overwatch aim mode.</summary>
+    public void ForceOverwatchMode() => OnOverwatchPressed();
+
+    /// <summary>
+    /// Test hook: set a combatant's overwatch target directly (bypassing the
+    /// action-spend gate) and refresh the active combatant's watched cells if
+    /// it is the current one.
+    /// </summary>
+    public void SetOverwatch(string name, int x, int y)
+    {
+        int index = IndexOf(name);
+        if (index < 0)
+            return;
+        _turns.Combatants[index].OverwatchTarget = new Vector2I(x, y);
+        if (index == _turns.CurrentIndex)
+        {
+            RefreshOverwatchCells();
+            RefreshHighlights();
+        }
+    }
+
+    /// <summary>
+    /// Test hook: the named combatant's overwatch target cell, or (-1, -1) if
+    /// it is not overwatching.
+    /// </summary>
+    public Vector2I GetOverwatchTarget(string name)
+    {
+        int index = IndexOf(name);
+        if (index < 0)
+            return new Vector2I(-1, -1);
+        var t = _turns.Combatants[index].OverwatchTarget;
+        return t.HasValue ? t.Value : new Vector2I(-1, -1);
+    }
+
+    /// <summary>
+    /// Test hook: the named combatant's watched overwatch cells (the line from
+    /// its CURRENT cell to its target, capped at weapon range), sorted as
+    /// "x,y ..." — empty if it is not overwatching.
+    /// </summary>
+    public string GetOverwatchLine(string name)
+    {
+        int index = IndexOf(name);
+        if (index < 0)
+            return "";
+        var c = _turns.Combatants[index];
+        if (!c.OverwatchTarget.HasValue)
+            return "";
+        var line = OverwatchLine(TokenCell(index), c.OverwatchTarget.Value, c.Equipment.Weapon.Range);
+        return string.Join(" ", line.OrderBy(v => v.Y).ThenBy(v => v.X).Select(v => $"{v.X},{v.Y}"));
+    }
+
+    /// <summary>
+    /// Test hook: whether cell (x, y) is in the ACTIVE combatant's watched
+    /// overwatch line (the live _overwatchCells set).
+    /// </summary>
+    public bool IsOverwatchCell(int x, int y) => _overwatchCells.Contains(new Vector2I(x, y));
+
+    /// <summary>Test hook: the current overwatch reaction pause (seconds).</summary>
+    public float GetOverwatchPause() => _overwatchPause;
+
+    /// <summary>
+    /// Test hook: set the overwatch reaction pause directly (headless tests
+    /// run with delta = 0, so a real 0.5s pause would never expire there).
+    /// </summary>
+    public void SetOverwatchPause(float seconds) => _overwatchPause = seconds;
+
     private static Item? ResolveItem(string itemName) => itemName switch
     {
         "BioStim" => Item.BioStim,
@@ -1364,6 +1456,163 @@ public partial class Level01 : Control
         }
     }
 
+    // --- Overwatch --------------------------------------------------------
+    // Overwatch: a combatant (party or enemy) designates a far-end cell within
+    // its weapon's range. Every cell on the straight (Bresenham) line from the
+    // combatant's CURRENT cell to that target — capped at the weapon's range,
+    // diagonals included — is "watched". The overwatch persists until the
+    // combatant's next turn. If, on an enemy's turn, that enemy walks into a
+    // watched cell, the overwatcher fires a reaction shot (weapon damage) at
+    // it, the game pauses for 0.5s, and the attack is logged to the console.
+    // Activating overwatch spends the combatant's one action for the turn.
+
+    // The straight line of cells from <from> (exclusive) to <to> (inclusive),
+    // walked one cell at a time with an integer Bresenham and capped at
+    // <range> cells. Diagonals are handled exactly like the shoot line of
+    // sight. Returns the watched cells in order from <from> toward <to>.
+    private List<Vector2I> OverwatchLine(Vector2I from, Vector2I to, int range)
+    {
+        var line = new List<Vector2I>();
+        int dx = to.X - from.X;
+        int dy = to.Y - from.Y;
+        if (dx == 0 && dy == 0)
+            return line;
+        int sx = Math.Sign(dx), sy = Math.Sign(dy);
+        int ax = Math.Abs(dx), ay = Math.Abs(dy);
+        int steps = Math.Min(Math.Max(ax, ay), range);
+        var cur = from;
+        int e2 = 2 * (ax >= ay ? ay : ax); // doubled error accumulator
+        int d2 = 2 * (ax >= ay ? ax : ay); // doubled dominant delta
+        for (int i = 0; i < steps; i++)
+        {
+            if (ax >= ay)
+            {
+                cur = new Vector2I(cur.X + sx, cur.Y);
+                if (e2 >= d2)
+                {
+                    cur = new Vector2I(cur.X, cur.Y + sy);
+                    e2 -= d2;
+                }
+            }
+            else
+            {
+                cur = new Vector2I(cur.X, cur.Y + sy);
+                if (e2 >= d2)
+                {
+                    cur = new Vector2I(cur.X + sx, cur.Y);
+                    e2 -= d2;
+                }
+            }
+            e2 += 2 * (ax >= ay ? ay : ax);
+            line.Add(cur);
+        }
+        return line;
+    }
+
+    // Whether <cell> is a valid overwatch target for a combatant standing on
+    // <from>: it must sit inside the weapon's range circle (dx^2 + dy^2 <=
+    // range^2, any direction) and on the board.
+    private bool IsOverwatchTarget(Vector2I from, Vector2I cell, int range)
+    {
+        if (cell == from)
+            return false;
+        if (cell.X < 0 || cell.X >= GridWidth || cell.Y < 0 || cell.Y >= GridHeight)
+            return false;
+        int dx = cell.X - from.X;
+        int dy = cell.Y - from.Y;
+        return dx * dx + dy * dy <= range * range;
+    }
+
+    // Recompute the active combatant's watched cells (_overwatchCells) from
+    // its CURRENT position and overwatch target. Empty when it is not
+    // overwatching. Called on turn start, after a move, and on activation.
+    private void RefreshOverwatchCells()
+    {
+        _overwatchCells.Clear();
+        var c = _turns.Combatants[_turns.CurrentIndex];
+        if (c.OverwatchTarget.HasValue)
+        {
+            var line = OverwatchLine(CurrentCell(), c.OverwatchTarget.Value, c.Equipment.Weapon.Range);
+            foreach (var cell in line)
+                _overwatchCells.Add(cell);
+        }
+    }
+
+    // The active party member spends its action entering overwatch mode: the
+    // board then shows the watched line as it hovers a target, and a click on
+    // a valid target cell commits the overwatch.
+    private void OnOverwatchPressed()
+    {
+        if (!_turnActive || _turns.Current.IsEnemy || _actionUsed)
+            return;
+        SetActionMode(ActionMode.Overwatch);
+    }
+
+    // A board click in overwatch mode: commit the overwatch on the clicked
+    // cell (must be within the weapon's range of the CURRENT position).
+    private void TryOverwatch(Vector2I cell)
+    {
+        if (_actionUsed || !_turnActive || _turns.Current.IsEnemy)
+            return;
+        var c = _turns.Combatants[_turns.CurrentIndex];
+        if (!IsOverwatchTarget(CurrentCell(), cell, c.Equipment.Weapon.Range))
+            return;
+        c.OverwatchTarget = cell;
+        RefreshOverwatchCells();
+        LogCombat($"{c.Name} takes overwatch on {cell.X},{cell.Y} (line of {c.Equipment.Weapon.Range})");
+        MarkActionUsed();
+    }
+
+    // Check whether <moverIndex> stepped onto a watched cell; if so, every
+    // living overwatcher whose line contains <cell> fires a reaction shot at
+    // the mover. Returns true if any reaction fired (which also arms the
+    // 0.5s game pause).
+    private bool CheckOverwatchTrigger(Vector2I cell, int moverIndex)
+    {
+        bool fired = false;
+        for (int i = 0; i < _turns.Combatants.Count; i++)
+        {
+            var watcher = _turns.Combatants[i];
+            if (i == moverIndex || watcher.IsDead)
+                continue;
+            if (!watcher.OverwatchTarget.HasValue)
+                continue;
+            var line = OverwatchLine(TokenCell(i), watcher.OverwatchTarget.Value, watcher.Equipment.Weapon.Range);
+            if (!line.Contains(cell))
+                continue;
+            ApplyOverwatchShot(i, moverIndex);
+            fired = true;
+        }
+        if (fired)
+            _overwatchPause = OverwatchPauseSeconds;
+        return fired;
+    }
+
+    // The overwatch reaction shot: hit roll, weapon damage on a hit, console
+    // line, token HP update, death removal.
+    private void ApplyOverwatchShot(int watcherIndex, int targetIndex)
+    {
+        var watcher = _turns.Combatants[watcherIndex];
+        var target = _turns.Combatants[targetIndex];
+        int chance = HitChance(watcher, target);
+        bool hit = RollHit(watcher, target);
+        _lastAttackResult = hit ? "HIT" : "MISS";
+        if (hit)
+        {
+            int damage = watcher.Equipment.Weapon.Damage;
+            target.HitPoints -= damage;
+            LogCombat($"{watcher.Name} OVERWATCHES {target.Name} with the {watcher.Equipment.Weapon.Name} — HIT ({chance}%), {damage} dmg ({target.HitPoints} HP left)");
+            RefreshTokenHp(targetIndex);
+            if (target.IsDead)
+                KillToken(targetIndex);
+        }
+        else
+        {
+            LogCombat($"{watcher.Name} OVERWATCHES {target.Name} with the {watcher.Equipment.Weapon.Name} — MISS ({chance}%)");
+        }
+        _lastOverwatchIndex = watcherIndex;
+    }
+
     // --- Turn / movement --------------------------------------------------
 
     private void SetActive()
@@ -1377,6 +1626,9 @@ public partial class Level01 : Control
         // A new turn always starts in MOVE mode, even if the previous
         // combatant ended their turn in shoot mode (or used WAIT there).
         _actionMode = ActionMode.Move;
+        // The combatant's previous overwatch expires at the start of their
+        // own turn (it lasted until now); they may set a fresh one this turn.
+        _turns.Combatants[index].OverwatchTarget = null;
         _turnLabel.Text = $"ROUND {_turns.Round} — TURN: {_turns.Current.Name}";
         RefreshInfoPanel();
         // Active token glows full-bright, the rest dim (modulate also covers
@@ -1387,6 +1639,7 @@ public partial class Level01 : Control
         ComputeShootTargets();
         ComputeMeleeTargets();
         ComputeGrenadeTargets();
+        RefreshOverwatchCells();
         RefreshHighlights();
         UpdateActionMenu();
 
@@ -1549,6 +1802,8 @@ public partial class Level01 : Control
             TryMeleeAt(cell);
         else if (_actionMode == ActionMode.Grenade)
             TryThrowGrenade(cell);
+        else if (_actionMode == ActionMode.Overwatch)
+            TryOverwatch(cell);
         else
             MoveTo(cell);
     }
@@ -1731,6 +1986,9 @@ public partial class Level01 : Control
             ComputeShootTargets();
             ComputeMeleeTargets();
             ComputeGrenadeTargets();
+            // A move also shifts the overwatch line (it is anchored to the
+            // current cell), so recompute the watched cells from here.
+            RefreshOverwatchCells();
         }
         RefreshHighlights();
     }
@@ -1749,6 +2007,9 @@ public partial class Level01 : Control
         ComputeShootTargets();
         ComputeMeleeTargets();
         ComputeGrenadeTargets();
+        // A move also shifts the overwatch line (anchored to the current
+        // cell), so recompute the watched cells from here.
+        RefreshOverwatchCells();
         RefreshHighlights();
     }
 
@@ -1860,6 +2121,10 @@ public partial class Level01 : Control
             if (step == null || bestStep >= curD)
                 break; // no neighbour is any closer: stop (adjacent or boxed)
             pos = step.Value;
+            // The enemy walks INTO this cell: if it lands on a watched line,
+            // the overwatcher fires a reaction shot and the enemy stops there.
+            if (CheckOverwatchTrigger(pos, index))
+                break;
             // A single step cannot jump OUT of the shooting circle (the max
             // in-circle distance is ~range*1.414, so one tile keeps the enemy
             // inside), so the first in-circle step is a valid stopping point.
@@ -2128,10 +2393,19 @@ public partial class Level01 : Control
             && !_turns.Combatants[_turns.CurrentIndex].IsEnemy;
         bool grenadeView = _actionMode == ActionMode.Grenade
             && !_turns.Combatants[_turns.CurrentIndex].IsEnemy;
-        _grid.Reachable = (shootView || meleeView || grenadeView) ? NoCells : _reachable.Keys;
+        bool overwatchView = _actionMode == ActionMode.Overwatch
+            && !_turns.Combatants[_turns.CurrentIndex].IsEnemy;
+        // The overwatch line is shown in overwatch mode (aiming) and also
+        // persists after the overwatch is committed (in any mode) so the
+        // player can see the danger line.
+        bool showOverwatch = overwatchView
+            || (_turns.Combatants[_turns.CurrentIndex].OverwatchTarget.HasValue
+                && !_turns.Combatants[_turns.CurrentIndex].IsEnemy);
+        _grid.Reachable = (shootView || meleeView || grenadeView || overwatchView) ? NoCells : _reachable.Keys;
         _grid.Shootable = shootView ? _shootTargets : NoCells;
         _grid.Meleeable = meleeView ? _meleeTargets : NoCells;
         _grid.Grenadeable = grenadeView ? _grenadeTargets : NoCells;
+        _grid.OverwatchCells = showOverwatch ? _overwatchCells : NoCells;
         RefreshBlastPreview();
         RefreshHoverTarget();
         RefreshGridLabels();
@@ -2321,16 +2595,19 @@ public partial class Level01 : Control
         _moveButton = new Button { Name = "Move", Text = "MOVE", CustomMinimumSize = new Vector2(84, 34) };
         _waitButton = new Button { Name = "Wait", Text = "WAIT", CustomMinimumSize = new Vector2(84, 34) };
         _itemsButton = new Button { Name = "Items", Text = "ITEMS", CustomMinimumSize = new Vector2(84, 34) };
+        _overwatchButton = new Button { Name = "Overwatch", Text = "OVERWATCH", CustomMinimumSize = new Vector2(84, 34) };
         _shootButton.Pressed += OnShootModePressed;
         _meleeButton.Pressed += OnMeleeModePressed;
         _moveButton.Pressed += OnMoveModePressed;
         _waitButton.Pressed += OnWaitPressed;
         _itemsButton.Pressed += OnItemsPressed;
+        _overwatchButton.Pressed += OnOverwatchPressed;
         actions.AddChild(_shootButton);
         actions.AddChild(_meleeButton);
         actions.AddChild(_moveButton);
         actions.AddChild(_waitButton);
         actions.AddChild(_itemsButton);
+        actions.AddChild(_overwatchButton);
         vbox.AddChild(actions);
         // The ITEMS select list: one button per usable item the active
         // combatant carries (BioStim / Grenade). Hidden until ITEMS is pressed.
@@ -2421,6 +2698,9 @@ public partial class Level01 : Control
         // ITEMS is disabled once the action is spent (or on enemy turns); it
         // can still be opened to look at the list before spending the action.
         _itemsButton.Disabled = enemyTurn || _actionUsed;
+        // OVERWATCH spends the action (like shoot/melee/wait); disabled on
+        // enemy turns or once the action is spent.
+        _overwatchButton.Disabled = enemyTurn || _actionUsed;
         // UNDO restores the turn's move; it is only useful once a party member
         // has actually moved this turn (and the turn is still active).
         _undoMenuButton.Disabled = enemyTurn || !_movedThisTurn || !_turnActive;
@@ -2431,6 +2711,7 @@ public partial class Level01 : Control
         _meleeButton.Modulate = _actionMode == ActionMode.Melee ? Colors.White : DimColor;
         _moveButton.Modulate = _actionMode == ActionMode.Move ? Colors.White : DimColor;
         _itemsButton.Modulate = _actionMode == ActionMode.Grenade ? Colors.White : DimColor;
+        _overwatchButton.Modulate = _actionMode == ActionMode.Overwatch ? Colors.White : DimColor;
     }
 
     // Keep the menu on screen at all times: it hugs the bottom-left corner
