@@ -31,6 +31,12 @@ public partial class IsoGrid : Node2D
     public IEnumerable<Vector2I> BlastCells { get; set; } = new HashSet<Vector2I>();
     // Cells the active combatant is overwatching (cyan diamonds).
     public IEnumerable<Vector2I> OverwatchCells { get; set; } = new HashSet<Vector2I>();
+    // Cells the active combatant could designate as an overwatch target
+    // (yellow diamonds, shown in overwatch mode).
+    public IEnumerable<Vector2I> OverwatchTargets { get; set; } = new HashSet<Vector2I>();
+    // The overwatch line preview: the cells that would be watched if the
+    // hovered target were committed (blue diamonds).
+    public IEnumerable<Vector2I> OverwatchLinePreview { get; set; } = new HashSet<Vector2I>();
     // (x, y, hp text) per live token, drawn above the token's diamond.
     public List<(int X, int Y, string Text)> TokenLabels = new();
 
@@ -58,6 +64,10 @@ public partial class IsoGrid : Node2D
     // Overwatch: the watched line (cyan diamonds) — distinct from the yellow
     // shoot/grenade targets so the player can see the danger line.
     private static readonly Color OverwatchHl = new(0.35f, 0.85f, 0.95f, 0.45f);
+    // Overwatch target cells (yellow, same as shoot targets) and the
+    // hover line preview (blue) — the cells that would be watched.
+    private static readonly Color OverwatchTargetHl = new(0.95f, 0.9f, 0.3f, 0.30f);
+    private static readonly Color OverwatchLineHl = new(0.3f, 0.55f, 0.95f, 0.55f);
     private static readonly Color HpText = new(0.9f, 0.95f, 1f);
 
     // Static floor geometry, cached once so _Draw (which runs on every
@@ -229,6 +239,10 @@ public partial class IsoGrid : Node2D
             DrawColoredPolygon(Diamond(cell.X, cell.Y), BlastHl);
         foreach (var cell in OverwatchCells)
             DrawColoredPolygon(Diamond(cell.X, cell.Y), OverwatchHl);
+        foreach (var cell in OverwatchTargets)
+            DrawColoredPolygon(Diamond(cell.X, cell.Y), OverwatchTargetHl);
+        foreach (var cell in OverwatchLinePreview)
+            DrawColoredPolygon(Diamond(cell.X, cell.Y), OverwatchLineHl);
 
         // 3. Token HP readouts, drawn last so they sit on top of everything.
         var font = ThemeDB.FallbackFont;
