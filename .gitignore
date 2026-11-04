@@ -7,6 +7,7 @@ bin/
 obj/
 *.user
 tests/_iso_shot.png
+
 # Backup dirs (contain .cs copies that break the build)
 assets_backup_pre_128_migration/
 
@@ -19,3 +20,7 @@ tests/_tileboard.gd
 tests/_tileboard.gd.uid
 tests/_before_after.png.import
 tests/_tile_scene_*.png.import
+tests/_floor_shot.png
+
+# temp canvas artifacts
+.agent_tmp/

@@ -1,0 +1,29 @@
+{
+  "description": "Full-junkyard floor for the 28x16 iso board (top-down)",
+  "size": [
+    1344,
+    768
+  ],
+  "px_per_tile": 48.0,
+  "model": {
+    "diffusion": "flux-2-klein-4b.safetensors",
+    "clip": "qwen_3_4b_fp4_flux2.safetensors",
+    "vae": "flux2-vae.safetensors",
+    "lora": "pixel-art-lora-flux2-klein.safetensors",
+    "trigger": "PXART4"
+  },
+  "sampler": {
+    "steps": 4,
+    "cfg": 1.0,
+    "sampler_name": "euler",
+    "scheduler": "simple",
+    "denoise": 1.0
+  },
+  "seed": 1338,
+  "positive_prompt": "PXART4. Top-down flat bird's-eye view of a vast abandoned junkyard ground plane, pixel art, 16-bit retro game style, flat surface, no perspective, no camera angle, straight down view, uniform dim overcast lighting, muted grimy color palette. The ground is a mix of cracked dark asphalt roads and streets with faded lane paint crossing muddy dirt, gravel patches, and compacted earth. Scattered across the flat ground are flattened piles of scrap metal, crushed car hoods and bumpers lying flat, rusted barrels, scattered trash and plastic bags, dark grease and oil stains, tire ruts, puddles of dirty water, loose pipes and wiring, gravel and pebbles. Everything lies flat on the ground like a top-down game tilemap, consistent cohesive scene. ",
+  "negative_prompt": "3d render, perspective, isometric projection, vanishing point, camera angle, horizon, sky, people, characters, text, letters, watermark, blurry, smooth, anti-aliased, photorealistic, realistic photo, standing objects, tall objects, depth, cast shadows, gradient, vignette, border, frame, cgi, painting, illustration",
+  "prompt_id": "dff6c16e-a405-4c22-922f-e530e3aaee28",
+  "generated_at": "2026-11-03T16:50:26",
+  "shipped_variant": "v1 (junkyard_floor_v1.png)",
+  "note": "The shipped junkyard_floor.png is the v1 generation (seed 1338). Variants v0/v2 also exist in ~/ComfyUI/output/junkyard_fullfloor/."
+}

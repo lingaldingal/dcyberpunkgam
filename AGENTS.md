@@ -26,13 +26,19 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - `tests/combat_test.gd` — headless combat test (equipment + random ranged AND melee weapon assignment, **circle-based shoot range (any direction, dx²+dy² ≤ range²) + LOS blocking by walls AND characters**, shooting-circle overlay, **weapon-based range/damage: pistol 4/2, rifle 6/3**, **melee: 4-adjacent-squares, knife 3 / katana 5, melee+shoot share the one action, melee-after-move recompute, enemy melee fallback when LOS blocked + enemy prefers shoot**, once-per-turn, WAIT, **enemy AI (move into shooting circle / hold + shoot or melee)**, **BioStim heal + grenade (circle throw range, 5-cell cross blast, red cross hover preview)**, death removes token + skips turns, **END TURN button in the actions menu**, action-menu screen clamping). ~155 checks.
 - `tests/overwatch_test.gd` — headless overwatch test (**Bresenham line from current cell to target, capped at weapon range, diagonals included**, range cap rifle 6 / pistol 4, re-anchor on a move, **enemy-walks-into-line trigger** (enemy stops on the watched cell, 0.5s pause armed, console log, HIT), persist-until-next-turn clearing, board-click commit spends the action). ~22 checks.
 - `readme.me` — pre-existing file, untouched
-- `assets/tiles/128x64/` — **Current** floor tiles: 128×128 seamless pixel-art PNGs (14
-  variants: junk_concrete, junk_asphalt, junk_dirt, junk_gravel, stone, wood, dirt, grass,
-  sand, snow, cobblestone, marble, dungeon, fantasy). Generated with **FLUX.2-klein-4B +
-  pixel-art LoRA** (see ComfyUI section below). The engine's 2:1 iso skew projects each
-  128×128 square onto a 128×64 on-screen diamond.
-- `assets/textures/floor/` — **Legacy** fallback dir. Contains 4 old 64×64 junkyard tiles
-  (junk_*.png) from the SDXL era; used only if `assets/tiles/128x64/` has no match.
+- `assets/textures/floor/junkyard_floor.png` — **PRIMARY floor (Level 1 junkyard)**: a
+  single 1344×768 top-down ground plane (the 28×16 board ratio) + `junkyard_floor_params.json`
+  (exact generation params, seed 1338). Drawn as ONE image under the whole board — NOT tiled.
+  Generated with FLUX.2-klein-4B + pixel-art LoRA (see `gen_junkyard_fullfloor.py` below).
+- `assets/tiles/128x64/` — **Current per-tile fallback** floor tiles: 128×128 seamless
+  pixel-art PNGs (14 variants: junk_concrete, junk_asphalt, junk_dirt, junk_gravel, stone,
+  wood, dirt, grass, sand, snow, cobblestone, marble, dungeon, fantasy). Generated with
+  FLUX.2-klein-4B + pixel-art LoRA (see ComfyUI section below). The engine's 2:1 iso skew
+  projects each 128×128 square onto a 128×64 on-screen diamond. Used only when no full-floor
+  image is present.
+- `assets/textures/floor/` (other files) — **Legacy** fallback dir. Contains old 64×64
+  junkyard tiles (junk_*.png) and 1024×1024 PNG sets (stone_floor/wood_floor/...); used only
+  if `assets/tiles/128x64/` has no match.
 
 ## ComfyUI + Texture Generation (FLUX.2-klein-4B pipeline)
 - **ComfyUI** is installed at `~/ComfyUI` (git clone, Python 3.12 `.venv`, PyTorch cu128).
@@ -70,13 +76,32 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
   used**. The FLUX.2-klein-4B pipeline produces significantly higher quality pixel art
   at 4 steps (vs 28 for SDXL) with native isometric capability.
 - **HuggingFace is reachable** from this network. All model files downloaded from HF.
-- **Game integration**: `Level01.FloorTextureName` (default `"junk_concrete"`) selects
-  which texture to load from `res://assets/tiles/128x64/` (primary) or
-  `res://assets/textures/floor/` (legacy fallback). `LoadFloorTexture()` in
-  `BuildBoard()` loads up to `FloorTextureVariants` (default 3) variants via
-  `GD.Load<Texture2D>(path)`. `IsoGrid._Draw` uses `DrawTextureRect` on each
-  walkable tile's logical bounding square; the iso skew projects it to a 2:1 diamond.
-  Falls back to flat colors when no texture file exists.
+- **Game integration (floor)**: `LoadFloorTexture()` in `BuildBoard()` has two
+  modes. **PRIMARY** — `Level01.FullFloorName` (default `"junkyard_floor"`)
+  loads ONE full-board top-down ground plane from `res://assets/textures/floor/`
+  and sets `_grid.FullFloor`; `IsoGrid._Draw` then draws that single texture
+  stretched to `Rect2(0, 0, Cols*Tile, Rows*Tile)` in logical board px (the iso
+  skew projects it to the 2:1 diamond) and SKIPS the per-tile diamond fills
+  (only the faint walkable edge outlines + obstacle wall faces + highlights
+  are drawn on top). **FALLBACK** — if no full-floor PNG exists it tiles
+  per-tile variants: `FloorTextureName` (default `"junk_concrete"`) + `_0/_1/_2`,
+  loaded from `res://assets/tiles/128x64/` (primary) or `res://assets/textures/floor/`
+  (legacy), up to `FloorTextureVariants` (3) via `DrawTextureRect` on each tile's
+  logical square, else flat colors.
+- **Full-floor generator**: `~/ComfyUI/scripts/gen_junkyard_fullfloor.py`
+  (run with `~/ComfyUI/.venv/bin/python`) renders a 1344×768 (28:16) top-down
+  junkyard ground plane via **FLUX.2-klein-4B + pixel-art-lora-flux2-klein
+  (trigger `PXART4`)**, 4-step euler/simple/cfg 1.0, then palette-reduces to
+  ~96 colors. Prompt: top-down bird's-eye junkyard — asphalt roads/streets
+  crossing dirt/gravel, flat scrap piles, crushed car hoods, barrels, trash
+  bags, grease/oil stains, tire ruts, puddles; negative bans perspective,
+  horizon, standing/tall objects, depth, cast shadows. `--variants N` renders
+  N seeds for picking. Params + the exact ComfyUI workflow JSON are saved to
+  `~/ComfyUI/output/junkyard_fullfloor/` and the chosen one's params are
+  copied to `assets/textures/floor/junkyard_floor_params.json`.
+  NOTE: FLUX.2-klein needs the `qwen_3_4b_fp4_flux2.safetensors` text encoder
+  (in `~/ComfyUI/models/text_encoders/`) + `flux2-vae.safetensors`; CLIPLoader
+  type is `"flux2"`.
 - **Future**: wall textures, structure interiors, multiple elevation levels.
   The texture system is designed to extend: add `WallTexture` to `IsoGrid`,
   per-tile texture selection, and layered rendering for structures.
