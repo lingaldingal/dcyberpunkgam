@@ -31,6 +31,11 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
   Played by an `AudioStreamPlayer` created in `Level01._Ready()` — starts when the
   level loads, stops automatically when the scene is freed (player is a child of the
   level node). Volume: -6dB.
+- `assets/audio/sfx/` — **weapon SFX** (6 OGG files, all generated with
+  MOSS-SoundEffect v2.0 — see MOSS section below + `SFX.md`):
+  `pistol_shot.ogg`, `rifle_shot.ogg`, `knife_slash.ogg`, `katana_slash.ogg`,
+  `grenade_throw.ogg`, `grenade_explosion.ogg`. Raw WAVs in
+  `~/MOSS-TTS/moss_soundeffect_v2/sfx_raw/`.
 - `assets/textures/floor/junkyard_floor.png` — **PRIMARY floor (Level 1 junkyard)**: a
   single 1344×768 top-down ground plane (the 28×16 board ratio) + `junkyard_floor_params.json`
   (exact generation params, seed 1338). Drawn as ONE image under the whole board — NOT tiled.
@@ -144,6 +149,39 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - **To regenerate the track**: edit the `CAPTION` in `generate_combat.py`,
   re-run, convert to OGG, copy to `assets/audio/level01_combat.ogg`,
   re-run `$GODOT --headless --path . --import`.
+
+## MOSS-SoundEffect v2.0 (sound effect generation)
+- **All game SFX come from MOSS-SoundEffect v2.0** (OpenMOSS, Apache-2.0).
+  Do NOT source SFX from elsewhere. See `SFX.md` for full instructions.
+- **Repo**: `~/MOSS-TTS/` (cloned from `github.com/OpenMOSS/MOSS-TTS`).
+  The SFX module is in `~/MOSS-TTS/moss_soundeffect_v2/`.
+- **Venv**: `~/MOSS-TTS/moss_soundeffect_v2/.venv/` (Python 3.12,
+  torch 2.9.0+cu128, transformers 4.57.1, diffusers 0.37.1, numpy 1.26.4).
+  Installed with `uv pip install --extra-index-url
+  https://download.pytorch.org/whl/cu128 --index-strategy unsafe-best-match
+  -e ".[torch-cu128]"`.
+- **Model weights**: `OpenMOSS-Team/MOSS-SoundEffect-v2.0` on HuggingFace
+  (~5.3 GB, cached in `~/.cache/huggingface/hub/`). 1.3B-param DiT + Flow
+  Matching + DAC VAE + Qwen3 text encoder. Runs in bfloat16 on the 5080.
+- **Generate**: `cd ~/MOSS-TTS/moss_soundeffect_v2 && TORCHDYNAMO_DISABLE=1
+  PYTORCH_ALLOC_CONF=expandable_segments:True .venv/bin/python
+  generate_sfx.py --steps 50 --max-sec 5 --out sfx_raw [--only name1,name2]
+  [--seed 42]`. The `--max-sec 5` flag is **critical** — without it the model
+  denoises a full 30 s latent and OOMs the 16 GB 5080. Each clip takes ~1.7 s
+  at 50 steps.
+- **Convert to OGG**: `ffmpeg -y -i sfx_raw/<name>.wav -ac 1 -codec:a
+  libvorbis -q:a 5 assets/audio/sfx/<name>.ogg`, then
+  `$GODOT --headless --path . --import`.
+- **SFX files**: `assets/audio/sfx/` — pistol_shot.ogg, rifle_shot.ogg,
+  knife_slash.ogg, katana_slash.ogg, grenade_throw.ogg, grenade_explosion.ogg.
+  Raw WAVs are in `~/MOSS-TTS/moss_soundeffect_v2/sfx_raw/`.
+- **Gotcha — silent outputs**: some (prompt, seed) combinations produce
+  near-silence (RMS < 0.005). If a WAV comes out silent, delete it and
+  regenerate with a different `--seed` (1337, 7, 99, 2024 all worked).
+- **Gotcha — torchaudio.save**: the pipeline's `save_audio()` calls
+  `torchaudio.save` which triggers torchcodec → needs FFmpeg shared libs
+  that aren't linked. Use `soundfile.write()` directly instead (the
+  generate script does this).
 
 ## Cutscene (scene_test)
 `SceneTest` (C#) is the basic 2D dialogue cutscene reached from the menu's
