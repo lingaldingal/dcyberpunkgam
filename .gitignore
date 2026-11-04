@@ -7,3 +7,7 @@ bin/
 obj/
 *.user
 tests/_iso_shot.png
+tests/_floor_shot.png
+
+# temp canvas artifacts
+.agent_tmp/

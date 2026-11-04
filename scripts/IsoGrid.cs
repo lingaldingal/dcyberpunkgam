@@ -46,6 +46,15 @@ public partial class IsoGrid : Node2D
     // so adjacent tiles show different textures, breaking up the repeat.
     public Texture2D[] FloorTextures = Array.Empty<Texture2D>();
 
+    // A single full-board floor texture (a top-down junkyard ground plane).
+    // When set, the WHOLE board is drawn as this ONE image stretched to
+    // [0,0,Cols*Tile,Rows*Tile] in logical board pixels; the iso skew on the
+    // parent node projects it to a 2:1 diamond automatically. This replaces
+    // the per-tile diamond fills so the floor reads as one consistent scene
+    // rather than a pile of repeated squares. Obstacle wall faces and the
+    // move/shoot highlights are still drawn on top.
+    public Texture2D FullFloor;
+
     private static readonly Color FloorA = new(0.13f, 0.16f, 0.24f);
     private static readonly Color FloorB = new(0.09f, 0.11f, 0.16f);
     private static readonly Color Edge = new(0.35f, 0.5f, 0.7f, 0.16f);
@@ -198,9 +207,26 @@ public partial class IsoGrid : Node2D
             return;
         EnsureFloorBuilt();
 
-        // 1. Floor tiles (geometry cached in EnsureFloorBuilt).
+        // 1. Floor. When a full-board texture is set, the entire ground plane
+        // is ONE image stretched across the whole board (logical px) — the
+        // iso skew projects it to the 2:1 diamond. The per-tile diamond fills
+        // are skipped (the texture covers them), but obstacle wall faces and
+        // the tile edge outlines are still drawn on top so the grid reads.
+        if (FullFloor != null)
+        {
+            DrawTextureRect(FullFloor,
+                new Rect2(0, 0, Cols * Tile, Rows * Tile), false);
+        }
         foreach (var t in _floorTiles)
         {
+            if (FullFloor != null)
+            {
+                // Full-floor mode: no per-tile fill; just the subtle edge
+                // outline (walkable tiles only) so the grid is faintly visible.
+                if (t.Walkable && t.Ring.Length > 0)
+                    DrawMultiline(t.Ring, Edge, 1f);
+                continue;
+            }
             if (t.Walkable && FloorTextures.Length > 0)
             {
                 // Draw the per-tile texture variant onto the tile's logical
