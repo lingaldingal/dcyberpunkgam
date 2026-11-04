@@ -27,3 +27,9 @@ window/size/viewport_height=720
 
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
+
+# Crisp pixel-art rendering at 1080p/1440p/4K: nearest-neighbor filtering, no
+# mipmaps (mipmaps would blur pixel art when zoomed). The 128x64 isometric
+# tile standard renders at integer logical coordinates, so integer zoom levels
+# (1.0, 1.1, ...) keep pixels sharp.
+textures/canvas_textures/default_filter=0

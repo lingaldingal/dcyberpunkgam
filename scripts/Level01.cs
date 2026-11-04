@@ -66,11 +66,14 @@ public partial class Level01 : Control
 {
     private const int GridWidth = 28;
     private const int GridHeight = 16;
-    // Tile size in logical board pixels. 64 leaves generous room on each
-    // diamond for standing/crouching/shooting character sprites and later
-    // environment art, while the 28x16 map still fits a 1280x720 window at
-    // the default zoom (diamond 1856x928; the edges are reachable via pan).
-    private const int TileSize = 64;
+    // Tile size in LOGICAL board pixels. 128 is the official isometric ground
+    // tile standard: under the 2:1 skew (X=(.5,.25), Y=(-.5,.25)) a 128x128
+    // logical tile renders as a 128px-wide x 64px-tall on-screen diamond, and
+    // neighbouring diamonds share edges with no gaps or overlap. (Previously
+    // 64, which rendered a 64x32 diamond — the migration doubled this to the
+    // 128x64 standard.) The 28x16 diamond is now 2816x1856 board px, larger
+    // than any window, so it is edge-clamped and pannable at the default zoom.
+    private const int TileSize = 128;
     // WASD pan speed in pixels per SECOND (frame-rate independent; the actual
     // per-frame step is CameraPanSpeed * delta in UpdateCamera). 480 px/s is
     // fast enough to feel responsive on a small map yet controllable — the map
@@ -2460,7 +2463,10 @@ public partial class Level01 : Control
             if (_tokenLabels[i] == null)
                 continue;
             var cell = TokenCell(i);
-            _tokenLabels[i].Position = IsoCellCenter(cell) + new Vector2(-32, -34);
+            // -68 vertical lift floats the name above the (now 128px) token;
+            // the -32 horizontal centers the label (unchanged — font size is
+            // the same as before the 64->128 tile migration).
+            _tokenLabels[i].Position = IsoCellCenter(cell) + new Vector2(-32, -68);
         }
     }
 
@@ -2521,34 +2527,49 @@ public partial class Level01 : Control
     // logical bounding square; the iso skew projects it to a diamond.
     // Per-tile variant selection (deterministic hash in IsoGrid) breaks up
     // the repeat so adjacent tiles show different textures.
-    // `FloorTextureName` selects the base name (e.g. "stone_floor" loads
-    // stone_floor_0.png, stone_floor_1.png, stone_floor_2.png).
+    // `FloorTextureName` selects the base name (e.g. "grass" loads
+    // grass_0.png, grass_1.png, grass_2.png). Textures live in
+    // `FloorTextureDir` (the official 128x64 tile directory); the old
+    // `assets/textures/floor/` path is a fallback for pre-migration assets.
     // Level 1 is a junkyard, so the default is the grimy concrete floor.
     public string FloorTextureName = "junk_concrete";
     public int FloorTextureVariants = 3;
+    // Directory (res://) holding the 128x64 ground-tile textures.
+    public string FloorTextureDir = "res://assets/tiles/128x64";
+    private const string LegacyFloorDir = "res://assets/textures/floor";
 
     private void LoadFloorTexture()
     {
         var loaded = new List<Texture2D>();
-        for (int v = 0; v < FloorTextureVariants; v++)
+        // Try the official 128x64 tile directory first, then the legacy path.
+        foreach (var dir in new[] { FloorTextureDir, LegacyFloorDir })
         {
-            var path = $"res://assets/textures/floor/{FloorTextureName}_{v}.png";
-            if (Godot.FileAccess.FileExists(path))
+            for (int v = 0; v < FloorTextureVariants; v++)
             {
-                var tex = GD.Load<Texture2D>(path);
-                if (tex != null)
-                    loaded.Add(tex);
+                var path = $"{dir}/{FloorTextureName}_{v}.png";
+                if (Godot.FileAccess.FileExists(path))
+                {
+                    var tex = GD.Load<Texture2D>(path);
+                    if (tex != null)
+                        loaded.Add(tex);
+                }
             }
+            if (loaded.Count > 0)
+                break;
         }
         // Fall back to the non-suffixed name if no variants were found.
         if (loaded.Count == 0)
         {
-            var path = $"res://assets/textures/floor/{FloorTextureName}.png";
-            if (Godot.FileAccess.FileExists(path))
+            foreach (var dir in new[] { FloorTextureDir, LegacyFloorDir })
             {
-                var tex = GD.Load<Texture2D>(path);
-                if (tex != null)
-                    loaded.Add(tex);
+                var path = $"{dir}/{FloorTextureName}.png";
+                if (Godot.FileAccess.FileExists(path))
+                {
+                    var tex = GD.Load<Texture2D>(path);
+                    if (tex != null)
+                        loaded.Add(tex);
+                    break;
+                }
             }
         }
         if (loaded.Count > 0)

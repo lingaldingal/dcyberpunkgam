@@ -7,4 +7,9 @@
     <RootNamespace>Dcyberpunkgam</RootNamespace>
   </PropertyGroup>
 
+  <!-- Exclude the pre-migration backup directory from compilation -->
+  <ItemGroup>
+    <Compile Remove="assets_backup_pre_128_migration/**/*.cs" />
+  </ItemGroup>
+
 </Project>

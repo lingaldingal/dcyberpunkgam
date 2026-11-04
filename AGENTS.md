@@ -26,46 +26,56 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - `tests/combat_test.gd` — headless combat test (equipment + random ranged AND melee weapon assignment, **circle-based shoot range (any direction, dx²+dy² ≤ range²) + LOS blocking by walls AND characters**, shooting-circle overlay, **weapon-based range/damage: pistol 4/2, rifle 6/3**, **melee: 4-adjacent-squares, knife 3 / katana 5, melee+shoot share the one action, melee-after-move recompute, enemy melee fallback when LOS blocked + enemy prefers shoot**, once-per-turn, WAIT, **enemy AI (move into shooting circle / hold + shoot or melee)**, **BioStim heal + grenade (circle throw range, 5-cell cross blast, red cross hover preview)**, death removes token + skips turns, **END TURN button in the actions menu**, action-menu screen clamping). ~155 checks.
 - `tests/overwatch_test.gd` — headless overwatch test (**Bresenham line from current cell to target, capped at weapon range, diagonals included**, range cap rifle 6 / pistol 4, re-anchor on a move, **enemy-walks-into-line trigger** (enemy stops on the watched cell, 0.5s pause armed, console log, HIT), persist-until-next-turn clearing, board-click commit spends the action). ~22 checks.
 - `readme.me` — pre-existing file, untouched
-- `assets/textures/floor/` — AI-generated floor textures. Old set: 1024×1024 PNG `stone_floor/wood_floor/dirt_ground/metal_grate/crystal_floor` (each with `_0/_1/_2` variants). **Junkyard set (Level 1 theme)**: crisp 64×64 seamless pixel-art PNGs `junk_concrete.png`, `junk_asphalt.png`, `junk_dirt.png`, `junk_gravel.png` (palette-32, generated with the SDXL + NeriJS pixel-art-xl LoRA workflow below).
+- `assets/tiles/128x64/` — **Current** floor tiles: 128×128 seamless pixel-art PNGs (14
+  variants: junk_concrete, junk_asphalt, junk_dirt, junk_gravel, stone, wood, dirt, grass,
+  sand, snow, cobblestone, marble, dungeon, fantasy). Generated with **FLUX.2-klein-4B +
+  pixel-art LoRA** (see ComfyUI section below). The engine's 2:1 iso skew projects each
+  128×128 square onto a 128×64 on-screen diamond.
+- `assets/textures/floor/` — **Legacy** fallback dir. Contains 4 old 64×64 junkyard tiles
+  (junk_*.png) from the SDXL era; used only if `assets/tiles/128x64/` has no match.
 
-## ComfyUI + Texture Generation
-- **ComfyUI** is installed at `~/ComfyUI` (git clone, Python 3.12 venv, PyTorch cu128).
+## ComfyUI + Texture Generation (FLUX.2-klein-4B pipeline)
+- **ComfyUI** is installed at `~/ComfyUI` (git clone, Python 3.12 `.venv`, PyTorch cu128).
   Start with `~/ComfyUI/start.sh` (port 8188, localhost only).
-- **Pixel-art floor workflow** (`~/ComfyUI/workflows/Isometric_Pixel_Floor_Generator.json`):
-  SDXL 1.0 + **NeriJS pixel-art-xl LoRA** (`models/loras/pixel-art-xl_v1.safetensors`, from
-  huggingface.co/nerijs/pixel-art-xl) at LoRA strength 1.0, 512×512, dpmpp_2m/karras 28 steps
-  CFG 7.0. Prompts use "top-down view of a flat seamless tileable texture, pixel art, 16-bit
-  retro game style, top-down, flat surface, no perspective, uniform lighting" + material.
-  Negative: "3d render, perspective, isometric projection, … blurry, smooth, anti-aliased, …".
-  - **`~/ComfyUI/scripts/gen_junkyard_floors.py`** — batch-generates the 5 junkyard floor
-    variants (concrete/asphalt/dirt/metal/gravel) via the ComfyUI `/prompt` API, then
-    post-processes each into a seamless 64×64 palette-32 game tile + 8× nearest-neighbor
-    preview. Outputs to `~/ComfyUI/output/isometric_floor_generator/junkyard/`. Requires the
-    ComfyUI server running. Add a `PreviewImage` node to any API workflow (a bare `VAEDecode`
-    is not recognized as an output → HTTP 400 "prompt_no_outputs").
-  - **`~/ComfyUI/scripts/postprocess_floor.py`** — standalone post-processor: seamless
-    offset-blend of edges + nearest-neighbor downscale to tile size + median-cut palette
-    reduction. `python postprocess_floor.py in.png out.png --tile 64 --palette 32`.
-  - The junkyard tiles were copied into `assets/textures/floor/junk_*.png`; the metal variant
-    was too bright (lum ~165) for the grimy theme so only concrete/asphalt/dirt/gravel shipped.
-  - **HuggingFace is reachable** from this network (200); ModelScope also works. `nerijs/pixel-art-xl`
-    is the go-to SDXL-compatible pixel-art LoRA (35k+ downloads).
-- **Model**: `sd_xl_base_1.0.safetensors` (SDXL 1.0, 6.6GB) in `~/ComfyUI/models/checkpoints/`.
-  (Was originally downloaded from ModelScope; HuggingFace is now reachable from this
-  network — `nerijs/pixel-art-xl` LoRA came straight from HF.)
-- **Generation script**: `~/ComfyUI/generate_floor_textures.py` — generates 5 floor
-  textures (stone, wood, dirt, metal grate, crystal) via the ComfyUI API.
-  Usage: `python generate_floor_textures.py --output-dir <path>`
-- **Workflow**: Standard SDXL text-to-image (KSampler, dpmpp_2m, karras, 30 steps,
-  CFG 7.0, 1024×1024). Prompts use "seamless tileable texture, top-down view" +
-  material description + "no perspective, flat surface" to get flat top-down
-  surfaces suitable for iso tile mapping.
-- **Game integration**: `Level01.FloorTextureName` (default `"stone_floor"`) selects
-  which texture to load from `res://assets/textures/floor/`. `LoadFloorTexture()`
-  in `BuildBoard()` loads it via `GD.Load<Texture2D>(path)` and sets
-  `_grid.FloorTexture`. `IsoGrid._Draw` uses `DrawTextureRect` on each walkable
-  tile's logical bounding square (`Rect2(x*Tile, y*Tile, Tile, Tile)`); the iso
-  skew on the parent `Iso` node projects the square to a 2:1 diamond automatically.
+- **Model stack** (FLUX.2-klein-4B, Apache-2.0, 4-step distilled):
+  - Diffusion: `models/diffusion_models/flux-2-klein-4b.safetensors` (7.75GB, from
+    `Comfy-Org/Flux-2-Klein-4B` on HF)
+  - Text encoder: `models/text_encoders/qwen_3_4b_fp4_flux2.safetensors` (3.85GB fp4)
+  - VAE: `models/vae/flux2-vae.safetensors` (336MB)
+  - LoRA: `models/loras/pixel-art-lora-flux2-klein.safetensors` (370MB, from
+    `adirik/pixel-art-lora-flux.2-klein-4B` on HF; trigger word **PXART4**)
+- **Workflow** (built in the generation script, no JSON file needed):
+  `UNETLoader` (weight_dtype="default") → `CLIPLoader` (type="flux2") → `VAELoader` →
+  `LoraLoader` (strength 1.0/1.0) → `CLIPTextEncode` (positive + negative) →
+  `EmptyLatentImage` (512×512) → `KSampler` (4 steps, euler, simple, CFG 1.0) →
+  `VAEDecode` → `PreviewImage`. Prompts: "PXART4. Top-down flat seamless tileable
+  texture, pixel art, 16-bit retro game style, flat surface, no perspective, uniform
+  dim lighting, muted grimy color palette, <material description>".
+  Negative: "3d render, perspective, isometric projection, … blurry, smooth,
+  anti-aliased, … photorealistic, 3d, render, cgi".
+- **Generation script**: `~/ComfyUI/scripts/gen_flux2_floor_tiles.py` — batch-generates
+  all 14 floor variants via the ComfyUI `/prompt` API, post-processes each into a
+  seamless 128×128 palette-48 game tile. Usage:
+  `.venv/bin/python scripts/gen_flux2_floor_tiles.py [--only name1,name2] [--tile 128] [--palette 48]`
+  Outputs directly to `assets/tiles/128x64/<name>.png`. Requires the ComfyUI server running.
+  **Gotcha**: `UNETLoader` requires `weight_dtype` input ("default") — omitting it gives
+  HTTP 400. The `PreviewImage` node is required (bare `VAEDecode` → HTTP 400).
+  Run with ComfyUI's venv: `~/ComfyUI/.venv/bin/python` (has PIL + numpy).
+- **Post-processing** (built into the script): seamless offset-blend of edges →
+  nearest-neighbor downscale to 128×128 → median-cut palette reduction to 48 colors.
+  `~/ComfyUI/scripts/postprocess_floor.py` is the standalone version.
+- **Old SDXL pipeline (retired)**: `gen_junkyard_floors.py`, `gen_128x64_tiles.py`,
+  `Isometric_Pixel_Floor_Generator.json` workflow, `sd_xl_base_1.0.safetensors`
+  checkpoint, `pixel-art-xl_v1.safetensors` LoRA — all still on disk but **no longer
+  used**. The FLUX.2-klein-4B pipeline produces significantly higher quality pixel art
+  at 4 steps (vs 28 for SDXL) with native isometric capability.
+- **HuggingFace is reachable** from this network. All model files downloaded from HF.
+- **Game integration**: `Level01.FloorTextureName` (default `"junk_concrete"`) selects
+  which texture to load from `res://assets/tiles/128x64/` (primary) or
+  `res://assets/textures/floor/` (legacy fallback). `LoadFloorTexture()` in
+  `BuildBoard()` loads up to `FloorTextureVariants` (default 3) variants via
+  `GD.Load<Texture2D>(path)`. `IsoGrid._Draw` uses `DrawTextureRect` on each
+  walkable tile's logical bounding square; the iso skew projects it to a 2:1 diamond.
   Falls back to flat colors when no texture file exists.
 - **Future**: wall textures, structure interiors, multiple elevation levels.
   The texture system is designed to extend: add `WallTexture` to `IsoGrid`,
@@ -170,13 +180,18 @@ SCENE TEST button:
   `GetPathPreview() -> float[4]` `[lineVis, endVis, endX, endY]`.
   `flow_test.gd` covers the route shape (detour via the open x=0 lane), the
   endpoint circle, and the hide cases (~79 checks total now).
-- **Isometric projection.** `level_01` is 2:1 iso. `TileSize` = **64px**
-  (`Level01.TileSize`, bumped from 48 so the map reads bigger/closer and leaves
-  room on each diamond for standing/crouching/shooting character sprites and
-  later environment art; the 28x16 diamond is now 1408x704 board px, bigger
-  than the 1280x720 window, so it is edge-clamped and pannable at the default
-  zoom). All fixed UI offsets (token name labels, HP readouts, wall height,
-  path-preview end circle, token diamond pad) were scaled up with the tile.
+- **Isometric projection.** `level_01` is 2:1 iso. `TileSize` = **128px**
+  (`Level01.TileSize`) — the **official 128×64 ground-tile standard** (migrated
+  from 64px on 2026-11-03; see `MIGRATION_128x64.md`). The 128×64 value is the
+  ON-SCREEN DIAMOND footprint: the engine skew projects a **128×128 SQUARE**
+  seamless texture onto it (logical `(x,y)` → screen `((x-y)/2,(x+y)/4)*128`).
+  Never author a 128×64 "diamond-shaped" image. Floor tiles live in
+  `assets/tiles/128x64/` (128×128 PNGs, 14 variants, all generated with
+  FLUX.2-klein-4B + pixel-art LoRA; see `~/ComfyUI/scripts/gen_flux2_floor_tiles.py`).
+  The 28x16
+  diamond is now 2816x1408 board px, edge-clamped and pannable. Fixed UI
+  offsets scaled with the tile: `TokenNode.Pad` 18, `IsoGrid.WallHeight` 36,
+  path-preview `EndRadius` 64, token-name + HP label lift −68.
   The `Board` Control holds
   an `Iso` Node2D child with a skew `Transform2D(X=(.5,.25), Y=(-.5,.25))`.
   Everything that must look skewed (floor, walls, highlights, tokens, range
@@ -478,6 +493,14 @@ Fix: menu/stage content lives in a full-rect `CenterContainer` + `VBoxContainer`
 never mix `anchors_preset` with explicit `anchor_*` values that disagree.
 
 ## Gotchas
+
+**Backup dirs break the C# build.** `assets_backup_pre_128_migration/` contains
+a copy of `Level01.cs` (and other scripts). The Godot SDK globs **all** `*.cs`
+in the project, so the backup's duplicate `class Level01` caused 282
+`CS0102: already contains a definition` build errors. `dcyberpunkgam.csproj`
+has `<Compile Remove="assets_backup_pre_128_migration/**/*.cs" />` to fix it.
+If you add any other dir containing `.cs` files (backups, references), exclude
+it the same way.
 - **Iso token/label paths**: tokens are `Node2D` `TokenNode`s under
   `Board/Iso` (names `P0`..`P3`, `E0`..`E3`); tests must look them up at
   `Board/Iso/P0`, not `Board/P0` (they're no longer `Control`s). Token

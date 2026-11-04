@@ -13,7 +13,7 @@ namespace Dcyberpunkgam;
 /// </summary>
 public partial class TokenNode : Node2D
 {
-    private const float Pad = 9;
+    private const float Pad = 18f; // inset in logical px (was 9 for the old 64px tile; doubled for the 128px tile)
     private readonly Color _color;
     private readonly int _tile;
 
