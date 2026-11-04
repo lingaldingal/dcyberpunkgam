@@ -306,6 +306,47 @@ public partial class Level01 : Control
 
     private AudioStreamPlayer _musicPlayer;
 
+    // --- SFX ----------------------------------------------------------------
+    private AudioStreamPlayer _sfxPlayer;
+    private readonly Dictionary<string, AudioStream> _sfxStreams = new();
+
+    // --- Attack pause (brief freeze so a shoot/melee reads as a beat) -------
+    private const float AttackPauseSeconds = 0.25f;
+    private float _attackPause;
+    private string _pendingSfx = "";
+    private int _pendingFloatTarget = -1;
+    private string _pendingFloatText = "";
+    private Color _pendingFloatColor;
+
+    // --- Movement animation (hop cell-by-cell) ------------------------------
+    private const float HopDurationPerCell = 0.08f;
+    private const float HopHeight = 8f; // logical-px peak offset
+    private bool _headless; // DisplayServer is "headless" (no rendering pass)
+    private class MoveAnim
+    {
+        public List<Vector2> Path;
+        public int PathIndex;
+        public float Elapsed;
+    }
+    private readonly Dictionary<int, MoveAnim> _moveAnims = new();
+
+    // --- Float labels (HIT / MISS above the target) -------------------------
+    private const float FloatDuration = 0.8f;
+    private const float FloatRise = 40f;
+    private class FloatEntry
+    {
+        public Label Label;
+        public Vector2 StartPos;
+        public float Elapsed;
+    }
+    private readonly List<FloatEntry> _floats = new();
+
+    // --- Grenade explosion (throw SFX now, explosion SFX + float after) -----
+    private const float GrenadeFuseSeconds = 0.35f;
+    private float _grenadeFuse;
+    private Vector2I _grenadeLanding;
+    private bool _grenadeArmed;
+
     public override void _Ready()
     {
         // Level 01 combat soundtrack: starts when the level loads, stops
@@ -318,6 +359,17 @@ public partial class Level01 : Control
         };
         AddChild(_musicPlayer);
         _musicPlayer.Play();
+
+        // SFX player: a single pooled AudioStreamPlayer for one-shot effects.
+        _sfxPlayer = new AudioStreamPlayer { VolumeDb = 0f };
+        AddChild(_sfxPlayer);
+        LoadSfxStreams();
+
+        // Cache the headless flag once (DisplayServer.GetName is a
+        // cross-boundary call; in headless/-s test mode it returns
+        // "headless" and there is no render pass, so cosmetic animations
+        // (hop, floats) are skipped and tokens stay at logical cells).
+        _headless = DisplayServer.GetName() == "headless";
 
         // Board clicks are routed through the LEVEL ROOT, not the Board
         // Control. A Control only receives gui_input for points inside its
@@ -391,6 +443,196 @@ public partial class Level01 : Control
         SetActive();
     }
 
+    // --- SFX ---------------------------------------------------------------
+
+    private void LoadSfxStreams()
+    {
+        string[] names = { "pistol_shot", "rifle_shot", "knife_slash", "katana_slash", "grenade_throw", "grenade_explosion", "footstep" };
+        foreach (var n in names)
+        {
+            var path = $"res://assets/audio/sfx/{n}.ogg";
+            if (Godot.FileAccess.FileExists(path))
+            {
+                var stream = GD.Load<AudioStream>(path);
+                if (stream != null)
+                    _sfxStreams[n] = stream;
+            }
+        }
+    }
+
+    private void PlaySfx(string name)
+    {
+        if (_sfxPlayer == null) return;
+        if (_sfxStreams.TryGetValue(name, out var stream))
+        {
+            _sfxPlayer.Stream = stream;
+            _sfxPlayer.Play();
+        }
+    }
+
+    private static string WeaponSfx(Character c)
+    {
+        var w = c.Equipment.Weapon;
+        return w?.Name == "Rifle" ? "rifle_shot" : "pistol_shot";
+    }
+
+    private static string MeleeSfx(Character c)
+    {
+        var w = c.Equipment.MeleeWeapon;
+        return w?.Name == "Katana" ? "katana_slash" : "knife_slash";
+    }
+
+    // --- Attack FX (SFX + float label) -------------------------------------
+
+    /// <summary>
+    /// Play the attack SFX and spawn a HIT/MISS float above the target.
+    /// Called from ApplyShot / ApplyMelee / ApplyOverwatchShot.
+    /// </summary>
+    private void QueueAttackFx(int targetIndex, bool hit, string sfxName)
+    {
+        // Brief pause before the SFX + float play (a shoot/melee animation
+        // will go here later). In headless mode the pause never expires, so
+        // the SFX/float never play — tests don't check for them.
+        _pendingSfx = sfxName;
+        _pendingFloatTarget = targetIndex;
+        _pendingFloatText = hit ? "HIT" : "MISS";
+        _pendingFloatColor = hit ? new Color(1f, 0.85f, 0.2f, 1f) : new Color(0.7f, 0.7f, 0.7f, 1f);
+        _attackPause = AttackPauseSeconds;
+    }
+
+    // --- Float labels (HIT / MISS above character) -------------------------
+
+    private void SpawnFloat(int targetIndex, string text, Color color)
+    {
+        if (targetIndex < 0 || targetIndex >= _tokens.Count)
+            return;
+        SpawnFloatAt(TokenCell(targetIndex), text, color);
+    }
+
+    // Spawn a rising, fading text label above a board cell (board space).
+    private void SpawnFloatAt(Vector2I cell, string text, Color color)
+    {
+        if (_board == null)
+            return;
+        var pos = IsoCellCenter(cell) + new Vector2(0, -90);
+        var label = new Label
+        {
+            Text = text,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            Size = new Vector2(80, 20),
+            MouseFilter = MouseFilterEnum.Ignore,
+            ZIndex = 10,
+        };
+        label.Modulate = color;
+        label.AddThemeFontSizeOverride("font_size", 16);
+        label.Position = pos;
+        _board.AddChild(label);
+        _floats.Add(new FloatEntry { Label = label, StartPos = pos, Elapsed = 0f });
+    }
+
+    private void UpdateFloats(float dt)
+    {
+        for (int i = _floats.Count - 1; i >= 0; i--)
+        {
+            var f = _floats[i];
+            f.Elapsed += dt;
+            if (f.Elapsed >= FloatDuration)
+            {
+                f.Label.QueueFree();
+                _floats.RemoveAt(i);
+                continue;
+            }
+            float t = f.Elapsed / FloatDuration;
+            f.Label.Position = f.StartPos + new Vector2(0, -FloatRise * t);
+            var m = f.Label.Modulate; m.A = 1f - t; f.Label.Modulate = m;
+        }
+    }
+
+    // --- Movement animation (hop cell-by-cell) -----------------------------
+
+    /// <summary>
+    /// Start a visual hop animation for <paramref name="index"/> along
+    /// <paramref name="path"/> (a list of cells from start to goal).
+    /// The logical cell is already set; this only animates the token's
+    /// visual position. In headless mode (delta=0) the animation never
+    /// advances, which is fine — tests read logical state.
+    /// </summary>
+    private void StartMoveAnimation(int index, List<Vector2I> path)
+    {
+        if (path == null || path.Count < 2)
+            return;
+        var pts = new List<Vector2>(path.Count);
+        foreach (var c in path)
+            pts.Add(new Vector2(c.X * TileSize, c.Y * TileSize));
+        // Snap the token back to the start cell so the hop begins there
+        // (SetTokenPos already moved it to the goal; the animation walks
+        // from start to goal cell-by-cell).
+        if (index < _tokens.Count)
+            _tokens[index].Position = pts[0];
+        _moveAnims[index] = new MoveAnim { Path = pts, PathIndex = 0, Elapsed = 0f };
+    }
+
+    private void UpdateMoveAnimations(float dt)
+    {
+        if (dt <= 0f) return; // headless: never advances
+        // In headless / -s test mode there is no render pass; skip the hop
+        // animation so tokens stay at their logical cell positions (tests
+        // assert exact token positions after a click-to-move).
+        if (_headless)
+        {
+            foreach (var kv in _moveAnims)
+                CancelMoveAnimation(kv.Key);
+            return;
+        }
+        var toRemove = new List<int>();
+        foreach (var kv in _moveAnims)
+        {
+            int idx = kv.Key;
+            var anim = kv.Value;
+            anim.Elapsed += dt;
+            float perCell = HopDurationPerCell;
+            while (anim.Elapsed >= perCell && anim.PathIndex < anim.Path.Count - 1)
+            {
+                anim.Elapsed -= perCell;
+                anim.PathIndex++;
+                PlaySfx("footstep");
+            }
+            // Interpolate between current and next cell corners.
+            int from = Mathf.Min(anim.PathIndex, anim.Path.Count - 1);
+            int to = Mathf.Min(anim.PathIndex + 1, anim.Path.Count - 1);
+            float t = perCell > 0 ? Mathf.Clamp(anim.Elapsed / perCell, 0f, 1f) : 1f;
+            var pos = anim.Path[from].Lerp(anim.Path[to], t);
+            // Hop: a small arc peaking at the mid-cell. A logical (-h,-h)
+            // offset projects to straight-UP on the iso screen, so the token
+            // visibly hops as it moves cell to cell.
+            float hop = HopHeight * Mathf.Sin(Mathf.Pi * t);
+            pos.X -= hop;
+            pos.Y -= hop;
+            if (idx < _tokens.Count)
+                _tokens[idx].Position = pos;
+            if (anim.PathIndex >= anim.Path.Count - 1 && anim.Elapsed >= perCell)
+            {
+                // Animation complete: snap to the final cell.
+                if (idx < _tokens.Count)
+                    _tokens[idx].Position = anim.Path[anim.Path.Count - 1];
+                toRemove.Add(idx);
+            }
+        }
+        foreach (var idx in toRemove)
+            _moveAnims.Remove(idx);
+    }
+
+    // Cancel any in-progress animation for <paramref name="index"/> and snap
+    // the token to its logical position (used by UNDO / SetTokenCell).
+    private void CancelMoveAnimation(int index)
+    {
+        if (_moveAnims.Remove(index) && index < _tokens.Count)
+        {
+            var cell = TokenCell(index);
+            _tokens[index].Position = new Vector2(cell.X * TileSize, cell.Y * TileSize);
+        }
+    }
+
     public override void _Process(double delta)
     {
         // Overwatch reaction pause: after an overwatch shot fires the whole
@@ -403,6 +645,27 @@ public partial class Level01 : Control
             if (_overwatchPause < 0f)
                 _overwatchPause = 0f;
             return;
+        }
+
+        // Attack beat: a shoot/melee fires its SFX + HIT/MISS float a short
+        // moment AFTER the action (a shoot/melee animation will occupy this
+        // window later). Non-blocking by design — it only delays the pending
+        // FX, so the rest of the update (enemy auto-move, camera, floats)
+        // keeps running. In headless mode delta=0 so the timer never expires
+        // and the FX never play (they're cosmetic; tests don't check them).
+        if (_attackPause > 0f)
+        {
+            _attackPause -= (float)delta;
+            if (_attackPause <= 0f)
+            {
+                _attackPause = 0f;
+                if (_pendingSfx != "")
+                    PlaySfx(_pendingSfx);
+                if (_pendingFloatTarget >= 0)
+                    SpawnFloat(_pendingFloatTarget, _pendingFloatText, _pendingFloatColor);
+                _pendingSfx = "";
+                _pendingFloatTarget = -1;
+            }
         }
 
         // First frame after layout: center the camera on the board (the
@@ -433,6 +696,9 @@ public partial class Level01 : Control
             _labelsDirty = false;
             UpdateTokenLabels();
         }
+        UpdateMoveAnimations((float)delta);
+        UpdateFloats((float)delta);
+        UpdateGrenadeFuse((float)delta);
         ClampActionMenu();
     }
 
@@ -869,6 +1135,9 @@ public partial class Level01 : Control
             return;
         // Clear any overwatch set this turn so the cyan line doesn't persist.
         _turns.Combatants[_turns.CurrentIndex].OverwatchTarget = null;
+        // Cancel any in-progress hop and snap the token back to the turn-start
+        // cell (UNDO is instant — no reverse animation).
+        CancelMoveAnimation(_turns.CurrentIndex);
         MoveTokenTo(_turns.CurrentIndex, _turnStartCell);
         _movedThisTurn = false;
         _actionUsed = false;
@@ -1008,6 +1277,8 @@ public partial class Level01 : Control
         int index = IndexOf(name);
         if (index < 0)
             return;
+        // A teleport kills any in-progress hop so the token snaps to the cell.
+        CancelMoveAnimation(index);
         SetTokenPos(index, new Vector2I(x, y));
     }
 
@@ -1467,6 +1738,28 @@ public partial class Level01 : Control
         LogCombat(hits.Count == 0
             ? $"{thrower.Name} throws a Grenade; it hits nothing."
             : $"{thrower.Name} throws a Grenade on {cell.X},{cell.Y} for {Item.Grenade.BlastDamage} dmg — {string.Join(", ", hits)}");
+        // Throw SFX now; the explosion SFX + a BOOM float play after a short
+        // fuse (armed here, detonated in _Process). In headless mode the fuse
+        // never expires, so the explosion SFX/float are skipped (cosmetic).
+        PlaySfx("grenade_throw");
+        _grenadeFuse = GrenadeFuseSeconds;
+        _grenadeLanding = cell;
+        _grenadeArmed = true;
+    }
+
+    // The grenade's short fuse: after GrenadeFuseSeconds the explosion SFX
+    // plays and a BOOM float rises from the landing cell.
+    private void UpdateGrenadeFuse(float dt)
+    {
+        if (!_grenadeArmed)
+            return;
+        _grenadeFuse -= dt;
+        if (_grenadeFuse <= 0f)
+        {
+            _grenadeArmed = false;
+            PlaySfx("grenade_explosion");
+            SpawnFloatAt(_grenadeLanding, "BOOM", new Color(1f, 0.5f, 0.1f, 1f));
+        }
     }
 
     // Rebuild the grenade throw-target set for the active combatant from its
@@ -1650,6 +1943,10 @@ public partial class Level01 : Control
         {
             LogCombat($"{watcher.Name} OVERWATCHES {target.Name} with the {watcher.Equipment.Weapon.Name} — MISS ({chance}%)");
         }
+        // The overwatch reaction fires during the enemy's walk; queue the
+        // weapon SFX + HIT/MISS float so the reaction reads (it plays once
+        // the overwatch pause + the short attack beat have elapsed).
+        QueueAttackFx(targetIndex, hit, WeaponSfx(watcher));
         _lastOverwatchIndex = watcherIndex;
     }
 
@@ -1930,6 +2227,7 @@ public partial class Level01 : Control
         {
             LogCombat($"{shooter.Name} shoots {target.Name} with the {shooter.Equipment.Weapon.Name} — MISS ({chance}%)");
         }
+        QueueAttackFx(targetIndex, hit, WeaponSfx(shooter));
         UpdateActionMenu();
     }
 
@@ -1982,6 +2280,7 @@ public partial class Level01 : Control
         {
             LogCombat($"{attacker.Name} strikes {target.Name} with the {attacker.Equipment.MeleeWeapon.Name} — MISS ({chance}%)");
         }
+        QueueAttackFx(targetIndex, hit, MeleeSfx(attacker));
         UpdateActionMenu();
     }
 
@@ -2041,8 +2340,13 @@ public partial class Level01 : Control
     // remain valid for the rest of the turn.
     private void MovePartyTo(Vector2I next)
     {
+        var from = TokenCell(_turns.CurrentIndex);
         SetTokenPos(_turns.CurrentIndex, next);
         _movedThisTurn = true;
+        // Visual hop: the token animates cell-by-cell along the BFS route
+        // (logical state is already at the goal; the hop is cosmetic and
+        // plays a footstep per cell). In headless mode it never advances.
+        StartMoveAnimation(_turns.CurrentIndex, BuildPath(from, next));
         // A move changes where shots/strikes are fired from: refresh the
         // shoot-, melee-, and grenade-target sets from the new position so a
         // shoot/melee/grenade-after-move aims from here.
@@ -2140,6 +2444,7 @@ public partial class Level01 : Control
         var toward = ComputeDistances(targetCell, int.MaxValue, index);
         int steps = enemy.MovementRange;
         var pos = CurrentCell();
+        var walked = new List<Vector2I> { pos }; // for the visual hop animation
         while (steps-- > 0)
         {
             if (!toward.TryGetValue(pos, out int curD))
@@ -2166,6 +2471,7 @@ public partial class Level01 : Control
             if (step == null || bestStep >= curD)
                 break; // no neighbour is any closer: stop (adjacent or boxed)
             pos = step.Value;
+            walked.Add(pos);
             // The enemy walks INTO this cell: if it lands on a watched line,
             // the overwatcher fires a reaction shot and the enemy stops there.
             if (CheckOverwatchTrigger(pos, index))
@@ -2180,6 +2486,9 @@ public partial class Level01 : Control
         {
             MoveTokenTo(index, pos);
             _movedThisTurn = true;
+            // Visual hop: the enemy animates cell-by-cell along the route it
+            // just walked (cosmetic; plays a footstep per cell).
+            StartMoveAnimation(index, walked);
             UpdateActionMenu();
         }
     }
