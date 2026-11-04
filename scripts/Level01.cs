@@ -275,6 +275,12 @@ public partial class Level01 : Control
     // from its cell to the overwatch target, excluding its own cell). Recomputed
     // from the current position on a move; empty when not overwatching.
     private readonly HashSet<Vector2I> _overwatchCells = new();
+    // All valid overwatch target cells (within weapon range, any direction)
+    // for the active combatant. Shown as yellow diamonds in overwatch mode.
+    private readonly HashSet<Vector2I> _overwatchTargets = new();
+    // The overwatch line preview: the cells that would be watched if the
+    // hovered target were committed. Shown as blue diamonds while aiming.
+    private readonly HashSet<Vector2I> _overwatchLinePreview = new();
     // Seconds the game is frozen after an overwatch reaction shot fires (0.5s).
     private float _overwatchPause;
     // The combatant index that last fired an overwatch reaction (for logging).
@@ -748,6 +754,7 @@ public partial class Level01 : Control
         _hoverCell = cell;
         RefreshPathPreview();
         RefreshBlastPreview();
+        RefreshOverwatchLinePreview();
         RefreshHoverTarget();
         _grid.Rebuild();
     }
@@ -757,6 +764,7 @@ public partial class Level01 : Control
         _hoverCell = null;
         RefreshPathPreview();
         RefreshBlastPreview();
+        RefreshOverwatchLinePreview();
         RefreshHoverTarget();
         _grid.Rebuild();
     }
@@ -840,11 +848,14 @@ public partial class Level01 : Control
 
     // Restore the active party member to the cell they started their turn in.
     // Allowed once, before END TURN, so a move can be reconsidered. Undoing
-    // also re-arms the turn's action (in the current mode).
+    // also re-arms the turn's action (in the current mode) and clears any
+    // overwatch that was set this turn.
     private void OnUndoPressed()
     {
         if (!_turnActive || _turns.Current.IsEnemy || !_movedThisTurn)
             return;
+        // Clear any overwatch set this turn so the cyan line doesn't persist.
+        _turns.Combatants[_turns.CurrentIndex].OverwatchTarget = null;
         MoveTokenTo(_turns.CurrentIndex, _turnStartCell);
         _movedThisTurn = false;
         _actionUsed = false;
@@ -1123,6 +1134,7 @@ public partial class Level01 : Control
         {
             ComputeShootTargets();
             ComputeMeleeTargets();
+            ComputeOverwatchTargets();
             RefreshHighlights();
         }
         UpdateActionMenu();
@@ -1319,6 +1331,18 @@ public partial class Level01 : Control
     /// overwatch line (the live _overwatchCells set).
     /// </summary>
     public bool IsOverwatchCell(int x, int y) => _overwatchCells.Contains(new Vector2I(x, y));
+
+    /// <summary>
+    /// Test hook: whether cell (x, y) is a valid overwatch target for the
+    /// active combatant (within weapon range, on the board).
+    /// </summary>
+    public bool IsOverwatchTarget(int x, int y) => _overwatchTargets.Contains(new Vector2I(x, y));
+
+    /// <summary>
+    /// Test hook: whether cell (x, y) is in the active combatant's overwatch
+    /// line preview (the blue line shown while hovering a valid target).
+    /// </summary>
+    public bool IsOverwatchLinePreviewCell(int x, int y) => _overwatchLinePreview.Contains(new Vector2I(x, y));
 
     /// <summary>Test hook: the current overwatch reaction pause (seconds).</summary>
     public float GetOverwatchPause() => _overwatchPause;
@@ -1642,6 +1666,7 @@ public partial class Level01 : Control
         ComputeShootTargets();
         ComputeMeleeTargets();
         ComputeGrenadeTargets();
+        ComputeOverwatchTargets();
         RefreshOverwatchCells();
         RefreshHighlights();
         UpdateActionMenu();
@@ -1989,6 +2014,7 @@ public partial class Level01 : Control
             ComputeShootTargets();
             ComputeMeleeTargets();
             ComputeGrenadeTargets();
+            ComputeOverwatchTargets();
             // A move also shifts the overwatch line (it is anchored to the
             // current cell), so recompute the watched cells from here.
             RefreshOverwatchCells();
@@ -2010,10 +2036,13 @@ public partial class Level01 : Control
         ComputeShootTargets();
         ComputeMeleeTargets();
         ComputeGrenadeTargets();
+        ComputeOverwatchTargets();
         // A move also shifts the overwatch line (anchored to the current
         // cell), so recompute the watched cells from here.
         RefreshOverwatchCells();
         RefreshHighlights();
+        // Update the action menu so the UNDO button reflects the new move state.
+        UpdateActionMenu();
     }
 
     /// <summary>Test hook: act for the active enemy now (AI move + shoot + end turn).</summary>
@@ -2334,6 +2363,34 @@ public partial class Level01 : Control
         }
     }
 
+    // Rebuild the overwatch-target set for the active combatant from its
+    // CURRENT position: every cell inside the weapon's range circle
+    // (dx^2 + dy^2 <= range^2, any direction) that is on the board and not
+    // the combatant's own cell. No line-of-sight requirement — overwatch
+    // watches a line, it doesn't need to see through walls to designate.
+    private void ComputeOverwatchTargets()
+    {
+        _overwatchTargets.Clear();
+        if (_turns.Combatants[_turns.CurrentIndex].IsEnemy)
+            return;
+        int range = _turns.Combatants[_turns.CurrentIndex].Equipment.Weapon.Range;
+        var from = CurrentCell();
+        for (int dy = -range; dy <= range; dy++)
+        {
+            for (int dx = -range; dx <= range; dx++)
+            {
+                if (dx == 0 && dy == 0)
+                    continue;
+                if (dx * dx + dy * dy > range * range)
+                    continue;
+                var cell = new Vector2I(from.X + dx, from.Y + dy);
+                if (cell.X < 0 || cell.X >= GridWidth || cell.Y < 0 || cell.Y >= GridHeight)
+                    continue;
+                _overwatchTargets.Add(cell);
+            }
+        }
+    }
+
     private void RefreshHighlights()
     {
         // The shooting-range circle: a soft ring centered on the active
@@ -2409,6 +2466,10 @@ public partial class Level01 : Control
         _grid.Meleeable = meleeView ? _meleeTargets : NoCells;
         _grid.Grenadeable = grenadeView ? _grenadeTargets : NoCells;
         _grid.OverwatchCells = showOverwatch ? _overwatchCells : NoCells;
+        // In overwatch mode (aiming), show the yellow target cells. The blue
+        // line preview is handled by RefreshOverwatchLinePreview.
+        _grid.OverwatchTargets = overwatchView ? _overwatchTargets : NoCells;
+        RefreshOverwatchLinePreview();
         RefreshBlastPreview();
         RefreshHoverTarget();
         RefreshGridLabels();
@@ -2438,6 +2499,31 @@ public partial class Level01 : Control
         }
         else
             _grid.BlastCells = NoCells;
+    }
+
+    // While aiming overwatch, the hovered yellow target cell shows the BLUE
+    // line of cells that would be watched (from the character's current cell
+    // to the hovered target, capped at weapon range). Empty in every other
+    // situation. Called on hover changes and on every RefreshHighlights.
+    private void RefreshOverwatchLinePreview()
+    {
+        bool overwatchView = _actionMode == ActionMode.Overwatch
+            && _turnActive
+            && !_turns.Combatants[_turns.CurrentIndex].IsEnemy;
+        if (overwatchView && _hoverCell != null && _overwatchTargets.Contains(_hoverCell.Value))
+        {
+            var c = _turns.Combatants[_turns.CurrentIndex];
+            var line = OverwatchLine(CurrentCell(), _hoverCell.Value, c.Equipment.Weapon.Range);
+            _overwatchLinePreview.Clear();
+            foreach (var cell in line)
+                _overwatchLinePreview.Add(cell);
+            _grid.OverwatchLinePreview = _overwatchLinePreview;
+        }
+        else
+        {
+            _overwatchLinePreview.Clear();
+            _grid.OverwatchLinePreview = NoCells;
+        }
     }
 
     // Rebuild the per-token HP text list the grid layer draws (live tokens
