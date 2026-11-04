@@ -304,8 +304,21 @@ public partial class Level01 : Control
     // BuildTopLeftBackButton).
     private Button _backButton = null!;
 
+    private AudioStreamPlayer _musicPlayer;
+
     public override void _Ready()
     {
+        // Level 01 combat soundtrack: starts when the level loads, stops
+        // automatically when the scene is freed (AudioStreamPlayer is a child
+        // of this node).
+        _musicPlayer = new AudioStreamPlayer
+        {
+            Stream = GD.Load<AudioStreamOggVorbis>("res://assets/audio/level01_combat.ogg"),
+            VolumeDb = -6f,
+        };
+        AddChild(_musicPlayer);
+        _musicPlayer.Play();
+
         // Board clicks are routed through the LEVEL ROOT, not the Board
         // Control. A Control only receives gui_input for points inside its
         // own local rect, and the Board's rect starts at local (0,0) — but

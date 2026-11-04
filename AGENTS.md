@@ -26,6 +26,11 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - `tests/combat_test.gd` — headless combat test (equipment + random ranged AND melee weapon assignment, **circle-based shoot range (any direction, dx²+dy² ≤ range²) + LOS blocking by walls AND characters**, shooting-circle overlay, **weapon-based range/damage: pistol 4/2, rifle 6/3**, **melee: 4-adjacent-squares, knife 3 / katana 5, melee+shoot share the one action, melee-after-move recompute, enemy melee fallback when LOS blocked + enemy prefers shoot**, once-per-turn, WAIT, **enemy AI (move into shooting circle / hold + shoot or melee)**, **BioStim heal + grenade (circle throw range, 5-cell cross blast, red cross hover preview)**, death removes token + skips turns, **END TURN button in the actions menu**, action-menu screen clamping). ~155 checks.
 - `tests/overwatch_test.gd` — headless overwatch test (**Bresenham line from current cell to target, capped at weapon range, diagonals included**, range cap rifle 6 / pistol 4, re-anchor on a move, **enemy-walks-into-line trigger** (enemy stops on the watched cell, 0.5s pause armed, console log, HIT), persist-until-next-turn clearing, board-click commit spends the action). ~22 checks.
 - `readme.me` — pre-existing file, untouched
+- `assets/audio/level01_combat.ogg` — Level 01 combat soundtrack (1.8MB, OGG Vorbis,
+  48kHz stereo, ~90s). Generated with ACE-Step v1.5 turbo (see ACE-Step section below).
+  Played by an `AudioStreamPlayer` created in `Level01._Ready()` — starts when the
+  level loads, stops automatically when the scene is freed (player is a child of the
+  level node). Volume: -6dB.
 - `assets/textures/floor/junkyard_floor.png` — **PRIMARY floor (Level 1 junkyard)**: a
   single 1344×768 top-down ground plane (the 28×16 board ratio) + `junkyard_floor_params.json`
   (exact generation params, seed 1338). Drawn as ONE image under the whole board — NOT tiled.
@@ -105,6 +110,40 @@ Godot 4 project (`dcyberpunkgam`), **C# (.NET / Godot Mono)**, 2D. Validated wit
 - **Future**: wall textures, structure interiors, multiple elevation levels.
   The texture system is designed to extend: add `WallTexture` to `IsoGrid`,
   per-tile texture selection, and layered rendering for structures.
+
+## ACE-Step v1.5 (music generation)
+- **ACE-Step v1.5** is installed at `~/acestep/repo15` (cloned from
+  `github.com/ace-step/ACE-Step-1.5`, the **official v1.5 repo** — NOT the
+  older v1 `ace-step/ACE-Step` repo). It's a hybrid LM + Diffusion Transformer
+  system, completely different architecture from v1.
+- **Model**: `acestep-v15-xl-turbo` (the XL flagship, `ACE-Step/acestep-v15-xl-turbo`
+  on HF) — 8 inference steps, "Very High" quality, ~10GB bf16 in memory
+  (19.9GB fp32 on disk). Plus the `acestep-5Hz-lm-1.7B` language model
+  (Qwen3-1.7B based) for song planning. Checkpoints live in
+  `~/acestep/repo15/checkpoints/`.
+- **VRAM**: the XL turbo DiT (~10GB bf16) + LM 1.7B + VAE + text encoder
+  exceed 16GB VRAM when all resident simultaneously. We use **sequential
+  loading with CPU offload** (`offload_to_cpu=True`, `offload_dit_to_cpu=True`):
+  the DiT sits on CPU, streams to GPU for the 8 diffusion steps (~1.7s),
+  then offloads back; the VAE streams in for decode. Peak VRAM stays ~13GB.
+  Total generation time: ~20s for a 90s track (vs 8s for the smaller turbo).
+- **Install**: `cd ~/acestep/repo15 && uv sync` (uses the project's
+  `uv.lock`; installs torch 2.10.0+cu128, transformers 4.57.6, flash-attn,
+  etc.). The venv is at `~/acestep/repo15/.venv` (~7.7GB).
+- **Generate**: `cd ~/acestep/repo15 && .venv/bin/python generate_combat.py`
+  — the `generate_combat.py` script in the repo root is our combat-track
+  generator (uses `AceStepHandler` + `LLMHandler` + `generate_music()` from
+  `acestep.inference`). Output goes to `~/acestep/repo15/output/combat/`.
+  A 90s track takes ~8 seconds on the 5080.
+- **Convert to OGG**: `ffmpeg -i <wav> -codec:a libvorbis -q:a 5 <ogg>` —
+  ffmpeg is installed via apt. Godot needs OGG Vorbis (not raw WAV).
+- **Game integration**: `Level01._Ready()` creates an `AudioStreamPlayer`
+  (child of the level node, so it auto-frees/stops when leaving the level),
+  loads `res://assets/audio/level01_combat.ogg`, and calls `Play()`.
+  Volume is -6dB. The C# type is `AudioStreamOggVorbis` (NOT `AudioStreamOgg`).
+- **To regenerate the track**: edit the `CAPTION` in `generate_combat.py`,
+  re-run, convert to OGG, copy to `assets/audio/level01_combat.ogg`,
+  re-run `$GODOT --headless --path . --import`.
 
 ## Cutscene (scene_test)
 `SceneTest` (C#) is the basic 2D dialogue cutscene reached from the menu's
