@@ -24,3 +24,4 @@ tests/_floor_shot.png
 
 # temp canvas artifacts
 .agent_tmp/
+tests/_floor_shot.png.import
